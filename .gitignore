@@ -1,0 +1,9 @@
+# TLC output directories
+_tlc_out/
+
+# Nix
+result
+
+# Test files
+hello.tla
+hello.cfg
