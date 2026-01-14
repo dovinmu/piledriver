@@ -32,6 +32,7 @@ IDLE → SCOPING → ASSUMPTIONS → VERIFICATION → REPORT → IDLE
 /pd.lock              Finalize current phase, advance to next mode
 /pd.rescope           Return to SCOPING (boundary was wrong)
 /pd.report            Generate findings report
+/pd.probe             Generate real-world probing plan
 /pd.done              Close hunt session, return to IDLE
 /pd.status            Show current mode and session info
 ```
@@ -266,6 +267,28 @@ nix develop --command sany spec/<hunt-name>/model.tla
 <How confident are we that the suspect area is bug-free or buggy?>
 <What would increase confidence?>
 ```
+
+---
+
+## Phase 5: REAL-WORLD PROBING
+
+**Goal**: Confirm findings in the actual codebase.
+
+### Your Tasks
+
+1. **Write reproducer test**
+   - Write a test in the codebase that reproduces the issue
+   - Instrumentation if needed
+   - Feedback loop
+
+2. **Confirm findings**
+   - If confirmed, proceed to "Recommendations"
+   - If disproven, `/pd.rescope` to update the model
+
+### Next Steps (Resume Plan)
+1. **Implement reproducer test**
+2. **If confirmed, proceed to "Recommendations"**
+3. **If disproven, `/pd.rescope` to update the model**
 
 ---
 
