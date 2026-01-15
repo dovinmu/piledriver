@@ -278,12 +278,10 @@ nix develop --command sany spec/<hunt-name>/model.tla
 
 1. **Write reproducer test**
    - Write a test in the codebase that reproduces the issue
-   - Instrumentation if needed
-   - Feedback loop
+   - Run the tests
 
-2. **Confirm findings**
-   - If confirmed, proceed to "Recommendations"
-   - If disproven, `/pd.rescope` to update the model
+2. **Confirm or disprove findings**
+Running the actual software is required. Get the user to help you if you are stuck. You must test the diagnosis itself, but testing the assumptions is strongly encouraged as well. Tell the user what you have actually done and be transparent about what we know and what we do not. This information will likely flow upstream to the earlier phases for adjustment to the model, assumptions, etc.
 
 ### Next Steps (Resume Plan)
 1. **Implement reproducer test**
