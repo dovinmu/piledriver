@@ -34,12 +34,15 @@ echo "Waiting for server to start..."
 sleep 5
 
 echo "Test 1: Single Batch Request"
-RESPONSE=$(curl -s -X POST "$API_URL" \
+curl -v -X POST "$API_URL" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d "{
     \"model\": \"$MODEL_NAME\",
     \"input\": [\"Hello world\"]
-  }")
+  }" > response.txt 2> curl_stderr.txt
+RESPONSE=$(cat response.txt)
+cat curl_stderr.txt
 
 # Check if response contains embeddings
 if echo "$RESPONSE" | grep -q "embeddings"; then
@@ -55,6 +58,7 @@ for i in {1..5}; do
     echo "Sending batch $i..."
     curl -s -X POST "$API_URL" \
       -H "Content-Type: application/json" \
+      -H "Accept: application/json" \
       -d "{
         \"model\": \"$MODEL_NAME\",
         \"input\": [\"Batch $i item 1\", \"Batch $i item 2\"]

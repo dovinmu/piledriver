@@ -41,4 +41,4 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 )
 
-replace github.com/antflydb/termite => ../../../../termite/pkg/termite
+replace github.com/antflydb/termite/pkg/termite => ../../../../termite/pkg/termite

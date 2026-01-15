@@ -55,7 +55,7 @@ func main() {
 
 	// 2. Spawn Client Routine
 	go func() {
-		session, err := sm.GetSession("mock")
+		handle, err := sm.GetSession("mock")
 		if err != nil {
 			fmt.Printf("GetSession failed: %v\n", err)
 			return
@@ -68,8 +68,11 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 
 		// Access the session to show we still hold it
-		_ = session
-		fmt.Println("Client: Finished work (if you see this, race might have been missed or handled)")
+		_ = handle.Session
+		
+		fmt.Println("Client: Work done, releasing handle...")
+		handle.Close()
+		
 		close(clientDone)
 	}()
 
@@ -79,20 +82,28 @@ func main() {
 
 	// Invoke Close immediately.
 	// In a correct system (RefCounting), Close() should block until clientDone.
-	// In the buggy system, Close() will proceed immediately and call Destroy().
-	err := sm.Close()
-	if err != nil {
-		// We expect a panic in Destroy() usually, but if it returns error, print it
-		fmt.Printf("Close completed with error: %v\n", err)
-	} else {
-		fmt.Println("Admin: Close completed successfully (BUG: Should have blocked or panicked)")
-	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("Recovered from expected mock session panic: %v\n", r)
+			}
+		}()
+		err := sm.Close()
+		if err != nil {
+			fmt.Printf("Close completed with error: %v\n", err)
+		}
+	}()
+	
+	closeData := time.Now()
+	fmt.Println("Admin: Close returned (or recovered).")
 
 	// 4. Verification
 	select {
 	case <-clientDone:
-		fmt.Println("Test finished.")
-	case <-time.After(1 * time.Second):
-		fmt.Println("Timeout waiting for client.")
+		fmt.Println("SUCCESS: Client finished before Close returned.")
+	default:
+		fmt.Println("FAILURE: Close returned before client finished!")
 	}
+	
+	_ = closeData
 }
