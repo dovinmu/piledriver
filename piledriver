@@ -6,13 +6,88 @@ A minimal CLI for scaffolding bug hunting sessions and validating reproducers.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PILEDRIVER_DIR = ".piledriver"
+
+# Phase constants
+PHASES = ["IDLE", "SCOPING", "ASSUMPTIONS", "VERIFICATION", "REPORT"]
+
+
+# === State file management ===
+
+def read_state(session_dir: Path) -> dict | None:
+    """Read state.json from a session directory, with file locking."""
+    state_file = session_dir / "state.json"
+    if not state_file.exists():
+        return None
+
+    lock_file = session_dir / "state.json.lock"
+    with open(lock_file, "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)  # Shared lock for reading
+        try:
+            with open(state_file) as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return None
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def write_state(session_dir: Path, state: dict) -> None:
+    """Write state.json to a session directory, with file locking."""
+    state_file = session_dir / "state.json"
+    lock_file = session_dir / "state.json.lock"
+
+    state["last_modified"] = datetime.now().isoformat()
+
+    with open(lock_file, "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)  # Exclusive lock for writing
+        try:
+            with open(state_file, "w") as f:
+                json.dump(state, f, indent=2)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def create_initial_state(session_name: str) -> dict:
+    """Create a new state dictionary for a session."""
+    now = datetime.now().isoformat()
+    return {
+        "session": session_name,
+        "current_phase": "IDLE",
+        "phase_history": [
+            {"phase": "IDLE", "entered": now}
+        ],
+        "phase_notes": {},
+        "created": now,
+        "last_modified": now
+    }
+
+
+def transition_phase(session_dir: Path, new_phase: str) -> bool:
+    """Transition to a new phase. Returns True on success."""
+    if new_phase not in PHASES:
+        return False
+
+    state = read_state(session_dir)
+    if state is None:
+        return False
+
+    state["current_phase"] = new_phase
+    state["phase_history"].append({
+        "phase": new_phase,
+        "entered": datetime.now().isoformat()
+    })
+
+    write_state(session_dir, state)
+    return True
 
 # === Stub file templates ===
 
@@ -218,6 +293,10 @@ def cmd_init(args):
     # Create directories
     session_dir.mkdir(parents=True)
 
+    # Create state.json
+    state = create_initial_state(session_name)
+    write_state(session_dir, state)
+
     # Create placeholder files
     (session_dir / "boundary.md").write_text(
         BOUNDARY_TEMPLATE.format(session_name=session_name)
@@ -232,6 +311,7 @@ def cmd_init(args):
     (session_dir / "probe.md").write_text(PROBE_TEMPLATE)
 
     print(f"Created session '{session_name}' at {session_dir}")
+    print(f"  - state.json (phase: IDLE)")
     print(f"  - boundary.md")
     print(f"  - assumptions.md")
     print(f"  - model.tla")
@@ -410,7 +490,12 @@ def cmd_status(args):
             print(f"Error: Session '{session_name}' not found.")
             return 1
 
+        # Read state
+        state = read_state(session_dir)
+        phase = state.get("current_phase", "UNKNOWN") if state else "NO STATE"
+
         print(f"Session: {session_name}")
+        print(f"Phase: {phase}")
 
         # List files
         files = []
@@ -474,6 +559,10 @@ def cmd_status(args):
             session = session_dir.name
             reproducers_dir = session_dir / "reproducers"
 
+            # Get phase
+            state = read_state(session_dir)
+            phase = state.get("current_phase", "?") if state else "?"
+
             if reproducers_dir.exists():
                 bug_dirs = [d for d in reproducers_dir.iterdir() if d.is_dir()]
                 num_bugs = len(bug_dirs)
@@ -492,11 +581,11 @@ def cmd_status(args):
                             pass
 
                 if num_bugs > 0:
-                    detail = f"({num_bugs} reproducers, {passing} passing)"
+                    detail = f"[{phase}] ({num_bugs} reproducers, {passing} passing)"
                 else:
-                    detail = "(0 reproducers)"
+                    detail = f"[{phase}] (0 reproducers)"
             else:
-                detail = "(0 reproducers)"
+                detail = f"[{phase}] (0 reproducers)"
 
             print(f"  {session:<20} {detail}")
 

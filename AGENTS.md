@@ -359,21 +359,3 @@ The `run.sh` script must:
 3. **Test your assumptions**: Assumptions are hypotheses, not facts
 4. **Rescope freely**: If the boundary was wrong, `/pd.rescope` and adjust
 5. **Document everything**: Future you (or another agent) needs to understand
-
----
-
-## Example Session
-
-```
-Human: I think there's a bug in the shard splitting logic when writes
-       happen during a split
-
-Agent: Starting hunt. Let me initialize the session.
-       $ piledriver init shard-split-writes
-
-       [Edits .piledriver/shard-split-writes/boundary.md]
-
-       INSIDE: ShardSplitter state machine, routing table updates
-       OUTSIDE: Raft consensus (assumed correct), single-shard writes
-
-       Does this boundary make sense?
