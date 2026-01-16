@@ -1,5 +1,9 @@
 # TLC output directories
 _tlc_out/
+.piledriver/*/_tlc_out/
+
+# Piledriver generated files
+.piledriver/*/reproducers/*/results.json
 
 # Nix
 result
