@@ -7,11 +7,16 @@ A systematic bug hunting workflow using formal methods. You are an agent assisti
 Piledriver provides a CLI for scaffolding and validation:
 
 ```bash
-piledriver init <session>       # Start a new analysis session
-piledriver bug <session> <bug>  # Create a bug reproducer scaffold
-piledriver test <session> [bug] # Run before/after test validation
-piledriver status [session]     # Show current state
+piledriver init <session>              # Start a new analysis session
+piledriver set-phase <session> <phase> # Transition to a new phase
+piledriver bug <session> <bug>         # Create a bug reproducer scaffold
+piledriver test <session> [bug]        # Run before/after test validation
+piledriver check <session> [--sany]    # Run TLC model checker
+piledriver pr <session>                # Generate PR draft from report
+piledriver status [session]            # Show current state
 ```
+
+Each command outputs guidance on what to do next. Use `piledriver set-phase` to transition between phases (replaces `/pd.lock`).
 
 ## Philosophy
 
@@ -28,29 +33,28 @@ IDLE → SCOPING → ASSUMPTIONS → VERIFICATION → REPORT → IDLE
          ↑_________|rescope|_________|
 ```
 
-| Mode | Description | Human Role | Exit Command |
-|------|-------------|------------|--------------|
-| **IDLE** | No active hunt | - | `/pd.hunt <suspect>` |
-| **SCOPING** | Define what's in/out of the model | Active collaboration | `/pd.lock` |
-| **ASSUMPTIONS** | Document what we assume about "outside" | Active collaboration | `/pd.lock` |
-| **VERIFICATION** | Formalize + model check + probe | Can interject | `/pd.report` |
-| **REPORT** | Synthesize findings | Review | `/pd.done` |
+| Mode | Description | Human Role | Advance Command |
+|------|-------------|------------|-----------------|
+| **IDLE** | No active hunt | - | `piledriver set-phase <session> SCOPING` |
+| **SCOPING** | Define what's in/out of the model | Active collaboration | `piledriver set-phase <session> ASSUMPTIONS` |
+| **ASSUMPTIONS** | Document what we assume about "outside" | Active collaboration | `piledriver set-phase <session> VERIFICATION` |
+| **VERIFICATION** | Formalize + model check + probe | Can interject | `piledriver set-phase <session> REPORT` |
+| **REPORT** | Synthesize findings | Review | `piledriver set-phase <session> IDLE` |
 
-### Commands
+### Phase Transitions
 
-```
-/pd.hunt <suspect>    Start a hunt session, enter SCOPING mode
-/pd.lock              Finalize current phase, advance to next mode
-/pd.rescope           Return to SCOPING (boundary was wrong)
-/pd.report            Generate findings report
-/pd.probe             Generate real-world probing plan
-/pd.done              Close hunt session, return to IDLE
-/pd.status            Show current mode and session info
-```
+Use `piledriver set-phase <session> <phase>` to transition between phases. The CLI validates that required artifacts are filled before advancing:
+
+- **SCOPING → ASSUMPTIONS**: Requires `boundary.md` to have content
+- **ASSUMPTIONS → VERIFICATION**: Requires `assumptions.md` to have content
+- **VERIFICATION → REPORT**: Requires `model.tla` to have content
+- **Rescope**: Use `piledriver set-phase <session> SCOPING` to go back (always allowed)
+
+Use `--force` to override validation (not recommended).
 
 ### Critical Rule
 
-**You cannot advance past SCOPING or ASSUMPTIONS without explicit human `/pd.lock` command.** This prevents modeling the wrong thing.
+**You cannot advance past SCOPING or ASSUMPTIONS without explicit human approval.** Before running `piledriver set-phase`, confirm with the human that the current phase is complete. This prevents modeling the wrong thing.
 
 ---
 
@@ -90,272 +94,87 @@ piledriver bug <session-name> <bug-name>
 
 ---
 
-## Phase 1: SCOPING
+## Phase Descriptions
 
+### SCOPING
 **Goal**: Define what gets formally modeled vs what becomes assumptions.
 
-### Your Tasks
+Read and fill out `boundary.md`. Define what's INSIDE (modeled in TLA+), OUTSIDE (black boxes with assumptions), and INTERFACE (boundary crossings).
 
-1. Understand the suspect (the reported bug or suspicious behavior)
-2. Propose a boundary:
-   - **INSIDE**: Components that will be formally modeled in TLA+
-   - **OUTSIDE**: Components treated as black boxes with assumptions
-   - **INTERFACE**: What crosses the boundary
-3. Iterate with the human until boundary is clear
-4. Write `boundary.md`
+**Guidelines**: Start small (easier to expand than contract). Every component is either IN or OUT, never ambiguous. Document what you're NOT checking and why.
 
-### boundary.md Template
-
-```markdown
-# Piledriver Boundary Definition
-
-## Hunt
-<hunt-name>
-
-## Suspect
-<Description of the suspected bug or suspicious behavior>
-
-## Inside (formally modeled)
-- <Component 1>
-- <Component 2>
-- <State machine / logic being verified>
-
-## Outside (assumptions)
-- <Component A> (assumed correct per <reason>)
-- <Component B> (assumed correct, separate hunt if needed)
-- <External system> (assumed bounded behavior)
-
-## Interface Points
-
-| Boundary Crossing | Direction | Assumption |
-|-------------------|-----------|------------|
-| Foo.Call() | OUT→IN | Eventually returns or fails, never hangs |
-| Bar.Get() | IN→OUT | Returns consistent view within same txn |
-
-## What This Scoping EXCLUDES
-- <Explicit list of things we are NOT checking>
-- <Reasons why they're excluded>
-```
-
-### Scoping Guidelines
-
-- **Start small**: It's easier to expand than to contract
-- **Be explicit**: Every component is either IN or OUT, never ambiguous
-- **Document exclusions**: State what you're NOT checking and why
-- **Identify interfaces**: Where does inside talk to outside?
-
----
-
-## Phase 2: ASSUMPTIONS
-
+### ASSUMPTIONS
 **Goal**: For each interface point, document what we assume about the outside.
 
-### Your Tasks
+Read and fill out `assumptions.md`. For each interface, document the assumption, source, risk level, and verification idea.
 
-1. For each interface in `boundary.md`, propose assumptions
-2. Discuss with human - they may know edge cases
-3. Mark which assumptions are risky (might not hold)
-4. Write `assumptions.md`
+**Guidelines**: Every interface needs assumptions. Source your beliefs ("Code inspection of X"). Flag risky assumptions as HIGH. Think adversarially.
 
-### assumptions.md Template
-
-```markdown
-# Boundary Assumptions
-
-## A1: <Short description>
-- **Interface**: <Which boundary crossing this relates to>
-- **Assumption**: <What we assume to be true>
-- **Source**: <Why we believe this - code inspection, docs, existing spec>
-- **Risk**: LOW | MEDIUM | HIGH
-- **Verification idea**: <How we could test this>
-
-## A2: <Short description>
-...
-
-## Critical Assumptions (HIGH risk)
-<List any assumptions that might not hold and need priority verification>
-```
-
-### Assumption Guidelines
-
-- **Every interface needs assumptions**: Don't leave implicit expectations
-- **Source your beliefs**: "Code inspection of X" or "Per Y documentation"
-- **Flag risks**: If an assumption is questionable, mark it HIGH
-- **Think adversarially**: What if the outside behaves unexpectedly?
-
----
-
-## Phase 3: VERIFICATION
-
+### VERIFICATION
 **Goal**: Formally model the inside, run TLC, probe boundaries.
 
-### Your Tasks
-
-1. **Write TLA+ spec** (`model.tla`)
-   - Model ONLY what's inside the boundary
-   - Use `ASSUME` for outside behaviors
-   - Define invariants that should always hold
-   - Define temporal properties if relevant
-
-2. **Write TLC config** (`model.cfg`)
-   - Specify which invariants to check
-   - Set state space bounds
-
-3. **Run TLC**
-   With Nix:
-   ```bash
-   nix develop --command tlc .piledriver/<session-name>/model.tla -config .piledriver/<session-name>/model.cfg
-   ```
-   Or with Java directly:
-   ```bash
-   java -jar tools/tla2tools.jar .piledriver/<session-name>/model.tla -config .piledriver/<session-name>/model.cfg
-   ```
-   Run from the piledriver root directory. Share full output with the human.
-
-4. **Analyze results**
-   - If counterexample found: study the trace, may need `/pd.rescope`
-   - If no issues: consider expanding boundary or probing assumptions
-
-5. **Propose assumption tests**
-   - How would we verify our assumptions hold in the real code?
-   - Write test ideas (implementation is separate)
-
-### TLA+ Guidelines
-
-```tla
----- MODULE <HuntName> ----
-EXTENDS Integers, Sequences, TLC
-
-\* === CONSTANTS ===
-CONSTANT MaxItems  \* Bound state space
-
-\* === STATE ===
-VARIABLES state, queue, ...
-
-\* === ASSUMPTIONS (from assumptions.md) ===
-\* A1: External service eventually responds
-ASSUME ExternalResponseBound \in Nat
-
-\* === ACTIONS ===
-Init == ...
-Next == ...
-
-\* === INVARIANTS ===
-TypeInvariant == ...
-SafetyProperty == ...
-
-\* === WHAT WE'RE CHECKING ===
-Spec == Init /\ [][Next]_vars
-====
-```
-
-### Syntax Checking
-
-To check TLA+ syntax without full model checking:
+Read `model.tla` for the template structure. Write the spec, create `model.cfg`, then run:
 ```bash
-nix develop --command sany .piledriver/<session-name>/model.tla
-# Or with Java directly:
-java -cp tools/tla2tools.jar tla2sany.SANY .piledriver/<session-name>/model.tla
+piledriver check <session-name>           # Full model check
+piledriver check <session-name> --sany    # Syntax check only
 ```
 
----
+If counterexample found, study the trace - may need to rescope. If no issues, consider expanding boundary.
 
-## Phase 4: REPORT
-
+### REPORT
 **Goal**: Synthesize what was found.
 
-### report.md Template
+Create `report.md` with summary, findings (from TLA+ and assumption analysis), and recommendations.
 
-```markdown
-# Hunt Report: <hunt-name>
+Generate PR draft with: `piledriver pr <session-name>`
 
-## Summary
-<One paragraph: what was the suspect, what did we find?>
+### REAL-WORLD PROBING
+**Goal**: Confirm findings in the actual codebase.
 
-## Boundary
-<Brief recap of what was modeled>
+Create reproducers with `piledriver bug <session> <bug-name>`, run with `piledriver test`.
 
-## Findings
-
-### From TLA+ Model Checking
-- <Finding 1: invariant violation / no issues / ...>
-- <Counterexample trace if applicable>
-
-### Assumption Analysis
-- <Which assumptions held up to scrutiny>
-- <Which assumptions are questionable>
-
-### Boundary Observations
-- <Anything suspicious at the interface points>
-- <Suggestions for expanding/shifting boundary>
-
-## Recommendations
-1. <Action item 1>
-2. <Action item 2>
-
-## Confidence
-<How confident are we that the suspect area is bug-free or buggy?>
-<What would increase confidence?>
-```
+Be transparent about what we know vs don't know. If findings are disproven, rescope with `piledriver set-phase <session> SCOPING`.
 
 ---
 
-## Phase 5: REAL-WORLD PROBING
+## Reproducer Best Practices
 
-**Goal**: Confirm findings in the actual codebase.
+When creating bug reproducers, follow these rules:
 
-### Your Tasks
+### 1. Single Test Rule
+Each reproducer should contain ONE test that tests ONE specific bug. Do not combine multiple bugs or create sprawling test suites.
 
-1. **Create bug reproducer**
-   ```bash
-   piledriver bug <session-name> <bug-name>
-   ```
-   This creates a scaffold with `README.md` and `run.sh`.
+### 2. Commit-First Workflow
+Before writing ANY test code:
+- Identify the exact commit where the bug exists (BASE_COMMIT)
+- Identify the exact commit with the fix (FIX_COMMIT)
+- The fix must be **committed** before running `piledriver test`
 
-2. **Edit run.sh**
-   Configure the reproducer:
-   - Set `REPO_PATH` to the repo under scrutiny
-   - Set `BASE_COMMIT` to the commit where the bug exists
-   - Set `FIX_COMMIT` to the commit with the fix
-   - Set `TEST_CMD` to the test command
+### 3. No Direct Imports
+Tests should use the target repo's existing test framework. Do not:
+- Import internal packages directly into the reproducer
+- Copy source files into the reproducer
+- Create mock implementations of core types
+- Patch or monkey-patch the code under test
 
-3. **Run the validation**
-   ```bash
-   piledriver test <session-name> <bug-name>
-   ```
-   Success criteria: tests fail on base commit, pass on fix commit.
+### 4. Use run.sh
+Always use the `run.sh` scaffold. Do not create separate before/after test files - the SAME test must fail on BASE_COMMIT and pass on FIX_COMMIT.
 
-4. **Confirm or disprove findings**
-   Running the actual software is required. Get the user to help you if you are stuck. You must test the diagnosis itself, but testing the assumptions is strongly encouraged as well. Tell the user what you have actually done and be transparent about what we know and what we do not. This information will likely flow upstream to the earlier phases for adjustment to the model, assumptions, etc.
+### 5. Minimal Reproduction
+The test should be the SMALLEST code that demonstrates the bug. Remove anything not strictly necessary.
 
-### run.sh Contract
-
-The `run.sh` script must:
-1. Checkout the base commit, run tests
-2. Checkout the fix commit, run tests
-3. Write results to `results.json`:
-   ```json
-   {
-     "base_commit": "<sha>",
-     "fix_commit": "<sha>",
-     "base_result": {"total": 5, "passed": 2, "failed": 3},
-     "fix_result": {"total": 5, "passed": 5, "failed": 0},
-     "success": true
-   }
-   ```
-   `success` = base has failures AND fix has none.
-
-### Next Steps (Resume Plan)
-1. **Implement reproducer test**
-2. **If confirmed, proceed to "Recommendations"**
-3. **If disproven, `/pd.rescope` to update the model**
+### 6. Deterministic
+The test must produce consistent results. Avoid:
+- Random values without fixed seeds
+- Timing-dependent assertions
+- External service dependencies
 
 ---
 
 ## Workflow Rules Summary
 
-1. **Human gates**: SCOPING and ASSUMPTIONS require `/pd.lock` to exit
+1. **Human gates**: Get human approval before advancing past SCOPING or ASSUMPTIONS
 2. **Explicit boundaries**: Everything is IN or OUT, never implicit
 3. **Test your assumptions**: Assumptions are hypotheses, not facts
-4. **Rescope freely**: If the boundary was wrong, `/pd.rescope` and adjust
+4. **Rescope freely**: If the boundary was wrong, `piledriver set-phase <session> SCOPING`
 5. **Document everything**: Future you (or another agent) needs to understand
