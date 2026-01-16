@@ -1,0 +1,565 @@
+#!/usr/bin/env python3
+"""
+Piledriver: TLA+ Bug Hunter CLI
+
+A minimal CLI for scaffolding bug hunting sessions and validating reproducers.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+PILEDRIVER_DIR = ".piledriver"
+
+# === Stub file templates ===
+
+BOUNDARY_TEMPLATE = """# Boundary Definition
+
+<!--
+This file defines what is INSIDE the formal model vs OUTSIDE (assumptions).
+Fill this out during SCOPING mode. Requires /pd.lock to finalize.
+
+- INSIDE: Components being formally modeled in TLA+
+- OUTSIDE: Components treated as black boxes with assumptions
+- INTERFACE: What crosses the boundary
+-->
+
+## Session
+{session_name}
+
+## Suspect
+<!-- Describe the suspected bug or suspicious behavior -->
+
+## Inside (formally modeled)
+-
+
+## Outside (assumptions)
+-
+
+## Interface Points
+| Boundary Crossing | Direction | Assumption |
+|-------------------|-----------|------------|
+|                   |           |            |
+"""
+
+ASSUMPTIONS_TEMPLATE = """# Boundary Assumptions
+
+<!--
+For each interface point in boundary.md, document what we assume about the outside.
+Fill this out during ASSUMPTIONS mode. Requires /pd.lock to finalize.
+-->
+
+## A1:
+- **Interface**:
+- **Assumption**:
+- **Source**:
+- **Risk**: LOW | MEDIUM | HIGH
+- **Verification idea**:
+"""
+
+MODEL_TLA_TEMPLATE = """---- MODULE {module_name} ----
+EXTENDS Integers, Sequences, TLC
+
+\\* Fill this out during VERIFICATION mode.
+\\* Model ONLY what's inside the boundary.
+\\* Use ASSUME for outside behaviors.
+
+\\* === CONSTANTS ===
+
+\\* === STATE ===
+VARIABLES placeholder
+
+vars == <<placeholder>>
+
+\\* === ACTIONS ===
+Init == placeholder = 0
+
+Next == UNCHANGED vars
+
+\\* === INVARIANTS ===
+TypeInvariant == TRUE
+
+\\* === SPEC ===
+Spec == Init /\\ [][Next]_vars
+====
+"""
+
+PROBE_TEMPLATE = """# Real-World Probing Plan
+
+<!--
+After formal verification, plan how to test findings in actual code.
+What tests will validate the model's predictions?
+What assumptions need verification?
+-->
+
+## Tests to Write
+
+## Assumptions to Verify
+
+## Expected Outcomes
+"""
+
+BUG_README_TEMPLATE = """# Reproducer: {bug_name}
+
+<!--
+This reproducer validates that:
+1. The bug exists in the original code (tests fail on base commit)
+2. The fix resolves the bug (tests pass on fix commit)
+
+Replace this content with your own documentation.
+-->
+
+## Bug Description
+
+## Base Commit
+<!-- The commit where the bug exists -->
+
+## Fix Commit
+<!-- The commit with the fix applied -->
+
+## How to Run
+```bash
+./run.sh
+# Results written to results.json
+```
+
+## Expected Behavior
+- Base commit: At least one test should FAIL
+- Fix commit: All tests should PASS
+"""
+
+BUG_RUNSH_TEMPLATE = """#!/bin/bash
+set -e
+
+# === CONFIGURATION ===
+# Modify these for your specific bug reproducer
+REPO_PATH="../../../termite"  # Path to repo under scrutiny
+BASE_COMMIT="abc123"          # Commit where bug exists
+FIX_COMMIT="def456"           # Commit with the fix
+TEST_CMD="go test -v ./path/to/tests/..."
+
+# === HELPER FUNCTIONS ===
+run_tests() {
+    local commit=$1
+    cd "$REPO_PATH"
+    git checkout -q "$commit"
+
+    # Run tests and capture results
+    # Modify this section based on your test framework
+    local output
+    local exit_code=0
+    output=$($TEST_CMD 2>&1) || exit_code=$?
+
+    # Parse test results (adjust for your framework)
+    local total=$(echo "$output" | grep -c "^--- " || echo "0")
+    local failed=$(echo "$output" | grep -c "^--- FAIL" || echo "0")
+    local passed=$((total - failed))
+
+    echo "{\\"total\\": $total, \\"passed\\": $passed, \\"failed\\": $failed}"
+    cd - > /dev/null
+    return $exit_code
+}
+
+# === MAIN ===
+echo "Testing base commit: $BASE_COMMIT"
+BASE_RESULT=$(run_tests "$BASE_COMMIT") || true
+
+echo "Testing fix commit: $FIX_COMMIT"
+FIX_RESULT=$(run_tests "$FIX_COMMIT")
+
+# Compute success
+BASE_FAILED=$(echo "$BASE_RESULT" | jq -r '.failed')
+FIX_FAILED=$(echo "$FIX_RESULT" | jq -r '.failed')
+
+if [[ "$BASE_FAILED" -gt 0 && "$FIX_FAILED" -eq 0 ]]; then
+    SUCCESS="true"
+else
+    SUCCESS="false"
+fi
+
+# Write results
+cat > results.json << EOF
+{
+  "base_commit": "$BASE_COMMIT",
+  "fix_commit": "$FIX_COMMIT",
+  "base_result": $BASE_RESULT,
+  "fix_result": $FIX_RESULT,
+  "success": $SUCCESS
+}
+EOF
+
+echo "Results written to results.json"
+echo "Success: $SUCCESS"
+"""
+
+
+def get_piledriver_root() -> Path:
+    """Find the .piledriver directory, searching upward from cwd."""
+    cwd = Path.cwd()
+    for parent in [cwd] + list(cwd.parents):
+        if (parent / PILEDRIVER_DIR).exists():
+            return parent / PILEDRIVER_DIR
+    return cwd / PILEDRIVER_DIR
+
+
+def cmd_init(args):
+    """Initialize a new analysis session."""
+    session_name = args.session_name
+    piledriver_dir = Path.cwd() / PILEDRIVER_DIR
+    session_dir = piledriver_dir / session_name
+
+    if session_dir.exists():
+        print(f"Error: Session '{session_name}' already exists at {session_dir}")
+        return 1
+
+    # Create directories
+    session_dir.mkdir(parents=True)
+
+    # Create placeholder files
+    (session_dir / "boundary.md").write_text(
+        BOUNDARY_TEMPLATE.format(session_name=session_name)
+    )
+    (session_dir / "assumptions.md").write_text(ASSUMPTIONS_TEMPLATE)
+
+    # Convert session name to valid TLA+ module name (PascalCase, no hyphens)
+    module_name = "".join(word.capitalize() for word in session_name.replace("-", "_").split("_"))
+    (session_dir / "model.tla").write_text(
+        MODEL_TLA_TEMPLATE.format(module_name=module_name)
+    )
+    (session_dir / "probe.md").write_text(PROBE_TEMPLATE)
+
+    print(f"Created session '{session_name}' at {session_dir}")
+    print(f"  - boundary.md")
+    print(f"  - assumptions.md")
+    print(f"  - model.tla")
+    print(f"  - probe.md")
+    return 0
+
+
+def cmd_bug(args):
+    """Create a bug reproducer scaffold."""
+    session_name = args.session_name
+    bug_name = args.bug_name
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        print(f"Run 'piledriver init {session_name}' first.")
+        return 1
+
+    reproducers_dir = session_dir / "reproducers"
+    bug_dir = reproducers_dir / bug_name
+
+    if bug_dir.exists():
+        print(f"Error: Bug reproducer '{bug_name}' already exists at {bug_dir}")
+        return 1
+
+    # Create directories
+    bug_dir.mkdir(parents=True)
+
+    # Create stub files
+    (bug_dir / "README.md").write_text(
+        BUG_README_TEMPLATE.format(bug_name=bug_name)
+    )
+    runsh_path = bug_dir / "run.sh"
+    runsh_path.write_text(BUG_RUNSH_TEMPLATE)
+    runsh_path.chmod(0o755)
+
+    print(f"Created bug reproducer '{bug_name}' at {bug_dir}")
+    print(f"  - README.md")
+    print(f"  - run.sh (executable)")
+    print()
+    print("Next steps:")
+    print("  1. Edit run.sh with your repo path, commits, and test command")
+    print("  2. Run: piledriver test {} {}".format(session_name, bug_name))
+    return 0
+
+
+def cmd_test(args):
+    """Run before/after test validation for reproducers."""
+    session_name = args.session_name
+    bug_name = args.bug_name
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    reproducers_dir = session_dir / "reproducers"
+    if not reproducers_dir.exists():
+        print(f"No reproducers found for session '{session_name}'.")
+        return 1
+
+    # Determine which bugs to test
+    if bug_name:
+        bug_dirs = [reproducers_dir / bug_name]
+        if not bug_dirs[0].exists():
+            print(f"Error: Bug reproducer '{bug_name}' not found.")
+            return 1
+    else:
+        bug_dirs = [d for d in reproducers_dir.iterdir() if d.is_dir()]
+        if not bug_dirs:
+            print(f"No bug reproducers found in {reproducers_dir}")
+            return 1
+
+    results = []
+    for bug_dir in sorted(bug_dirs):
+        bug = bug_dir.name
+        runsh = bug_dir / "run.sh"
+        results_file = bug_dir / "results.json"
+
+        if not runsh.exists():
+            print(f"[{bug}] SKIP - no run.sh")
+            results.append((bug, "SKIP", "no run.sh"))
+            continue
+
+        print(f"[{bug}] Running...")
+
+        # Execute run.sh
+        try:
+            result = subprocess.run(
+                ["bash", str(runsh)],
+                cwd=str(bug_dir),
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[{bug}] TIMEOUT")
+            results.append((bug, "TIMEOUT", "exceeded 10 minutes"))
+            continue
+        except Exception as e:
+            print(f"[{bug}] ERROR - {e}")
+            results.append((bug, "ERROR", str(e)))
+            continue
+
+        # Read results.json
+        if not results_file.exists():
+            print(f"[{bug}] ERROR - no results.json generated")
+            results.append((bug, "ERROR", "no results.json"))
+            continue
+
+        try:
+            with open(results_file) as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"[{bug}] ERROR - invalid results.json: {e}")
+            results.append((bug, "ERROR", f"invalid JSON: {e}"))
+            continue
+
+        # Evaluate results
+        success = data.get("success", False)
+        base_result = data.get("base_result", {})
+        fix_result = data.get("fix_result", {})
+
+        base_failed = base_result.get("failed", 0)
+        fix_failed = fix_result.get("failed", 0)
+
+        if success:
+            status = "PASS"
+            detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
+        else:
+            status = "FAIL"
+            if base_failed == 0:
+                detail = f"base had 0 failures (expected >0)"
+            elif fix_failed > 0:
+                detail = f"fix still has {fix_failed} failures"
+            else:
+                detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
+
+        print(f"[{bug}] {status} ({detail})")
+        results.append((bug, status, detail))
+
+    # Print summary
+    print()
+    print("=" * 60)
+    print("Summary:")
+    passed = sum(1 for _, status, _ in results if status == "PASS")
+    total = len(results)
+    print(f"  {passed}/{total} reproducers passing")
+
+    for bug, status, detail in results:
+        icon = "+" if status == "PASS" else "-" if status == "FAIL" else "?"
+        print(f"  [{icon}] {bug}: {status}")
+
+    return 0 if passed == total else 1
+
+
+def cmd_status(args):
+    """Show current state of piledriver."""
+    session_name = args.session_name
+
+    piledriver_dir = get_piledriver_root()
+
+    if not piledriver_dir.exists():
+        print("No .piledriver directory found.")
+        print("Run 'piledriver init <session_name>' to start.")
+        return 1
+
+    if session_name:
+        # Show specific session details
+        session_dir = piledriver_dir / session_name
+        if not session_dir.exists():
+            print(f"Error: Session '{session_name}' not found.")
+            return 1
+
+        print(f"Session: {session_name}")
+
+        # List files
+        files = []
+        for f in ["boundary.md", "assumptions.md", "model.tla", "model.cfg", "probe.md"]:
+            if (session_dir / f).exists():
+                files.append(f)
+        print(f"Files: {', '.join(files)}")
+
+        # List reproducers
+        reproducers_dir = session_dir / "reproducers"
+        if reproducers_dir.exists():
+            bug_dirs = sorted([d for d in reproducers_dir.iterdir() if d.is_dir()])
+            if bug_dirs:
+                print()
+                print("Reproducers:")
+                for bug_dir in bug_dirs:
+                    bug = bug_dir.name
+                    results_file = bug_dir / "results.json"
+
+                    if results_file.exists():
+                        try:
+                            with open(results_file) as f:
+                                data = json.load(f)
+                            success = data.get("success", False)
+                            base_result = data.get("base_result", {})
+                            fix_result = data.get("fix_result", {})
+                            base_failed = base_result.get("failed", 0)
+                            fix_failed = fix_result.get("failed", 0)
+
+                            if success:
+                                status = f"PASS (base: {base_failed} fail, fix: {fix_failed} fail)"
+                            else:
+                                status = f"FAIL (base: {base_failed} fail, fix: {fix_failed} fail)"
+                        except (json.JSONDecodeError, KeyError):
+                            status = "ERROR (invalid results.json)"
+                    else:
+                        status = "NOT RUN"
+
+                    print(f"  {bug:<30} {status}")
+            else:
+                print()
+                print("Reproducers: none")
+        else:
+            print()
+            print("Reproducers: none")
+
+    else:
+        # List all sessions
+        sessions = sorted([
+            d for d in piledriver_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ])
+
+        if not sessions:
+            print("No sessions found.")
+            print("Run 'piledriver init <session_name>' to start.")
+            return 0
+
+        print("Piledriver Sessions:")
+        for session_dir in sessions:
+            session = session_dir.name
+            reproducers_dir = session_dir / "reproducers"
+
+            if reproducers_dir.exists():
+                bug_dirs = [d for d in reproducers_dir.iterdir() if d.is_dir()]
+                num_bugs = len(bug_dirs)
+
+                # Count passing reproducers
+                passing = 0
+                for bug_dir in bug_dirs:
+                    results_file = bug_dir / "results.json"
+                    if results_file.exists():
+                        try:
+                            with open(results_file) as f:
+                                data = json.load(f)
+                            if data.get("success", False):
+                                passing += 1
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+
+                if num_bugs > 0:
+                    detail = f"({num_bugs} reproducers, {passing} passing)"
+                else:
+                    detail = "(0 reproducers)"
+            else:
+                detail = "(0 reproducers)"
+
+            print(f"  {session:<20} {detail}")
+
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Piledriver: TLA+ Bug Hunter CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Commands:
+  init <session>              Start a new analysis session
+  bug <session> <bug>         Create a bug reproducer scaffold
+  test <session> [bug]        Run before/after test validation
+  status [session]            Show current state
+
+Examples:
+  piledriver init hugot-usage
+  piledriver bug hugot-usage bug1_close_race
+  piledriver test hugot-usage
+  piledriver status
+"""
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # init command
+    init_parser = subparsers.add_parser("init", help="Start a new analysis session")
+    init_parser.add_argument("session_name", help="Name for the session")
+
+    # bug command
+    bug_parser = subparsers.add_parser("bug", help="Create a bug reproducer scaffold")
+    bug_parser.add_argument("session_name", help="Session to add the bug to")
+    bug_parser.add_argument("bug_name", help="Name for the bug reproducer")
+
+    # test command
+    test_parser = subparsers.add_parser("test", help="Run before/after test validation")
+    test_parser.add_argument("session_name", help="Session to test")
+    test_parser.add_argument("bug_name", nargs="?", help="Specific bug to test (optional)")
+
+    # status command
+    status_parser = subparsers.add_parser("status", help="Show current state")
+    status_parser.add_argument("session_name", nargs="?", help="Session to show details for")
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        return 1
+
+    if args.command == "init":
+        return cmd_init(args)
+    elif args.command == "bug":
+        return cmd_bug(args)
+    elif args.command == "test":
+        return cmd_test(args)
+    elif args.command == "status":
+        return cmd_status(args)
+    else:
+        parser.print_help()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
