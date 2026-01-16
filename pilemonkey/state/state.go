@@ -45,12 +45,23 @@ type PhaseEntry struct {
 	Entered time.Time `json:"entered"`
 }
 
+// TLCResult records the result of a TLC model check
+type TLCResult struct {
+	Timestamp      time.Time `json:"timestamp"`
+	SanyOnly       bool      `json:"sany_only"`
+	Success        bool      `json:"success"`
+	StatesGenerated int      `json:"states_generated"`
+	DistinctStates int       `json:"distinct_states"`
+	Violations     []string  `json:"violations,omitempty"`
+}
+
 // SessionState represents the state of a piledriver session
 type SessionState struct {
 	Session      string           `json:"session"`
 	CurrentPhase Phase            `json:"current_phase"`
 	PhaseHistory []PhaseEntry     `json:"phase_history"`
 	PhaseNotes   map[Phase]string `json:"phase_notes"`
+	TLCResults   []TLCResult      `json:"tlc_results,omitempty"`
 	Created      time.Time        `json:"created"`
 	LastModified time.Time        `json:"last_modified"`
 }
@@ -149,4 +160,12 @@ func (s *SessionState) HasVisitedPhase(phase Phase) bool {
 		}
 	}
 	return false
+}
+
+// LatestTLCResult returns the most recent TLC result, or nil if none exist
+func (s *SessionState) LatestTLCResult() *TLCResult {
+	if len(s.TLCResults) == 0 {
+		return nil
+	}
+	return &s.TLCResults[len(s.TLCResults)-1]
 }

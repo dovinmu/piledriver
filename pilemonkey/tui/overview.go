@@ -115,6 +115,12 @@ func renderOverviewContent(m Model, height int) string {
 	lines = append(lines, renderReproducerSummary(m))
 	lines = append(lines, "")
 
+	// TLC Status
+	lines = append(lines, sectionTitleStyle.Render("  TLC Status"))
+	lines = append(lines, "")
+	lines = append(lines, renderTLCStatus(m))
+	lines = append(lines, "")
+
 	// Notes section
 	lines = append(lines, sectionTitleStyle.Render(fmt.Sprintf("  Notes for %s", m.viewingPhase)))
 	lines = append(lines, "")
@@ -250,6 +256,42 @@ func renderReproducerSummary(m Model) string {
 	}
 
 	return "    " + strings.Join(parts, ", ")
+}
+
+func renderTLCStatus(m Model) string {
+	if m.sessionInfo == nil || m.sessionInfo.State == nil {
+		return "    No session loaded"
+	}
+
+	result := m.sessionInfo.State.LatestTLCResult()
+	if result == nil {
+		return "    " + fileMissingStyle.Render("No TLC runs yet")
+	}
+
+	// Format: "TLC: 1234 states, no violations" or "TLC: 1234 states, 2 violations"
+	var status string
+	if result.SanyOnly {
+		if result.Success {
+			status = fileExistsStyle.Render("Syntax OK")
+		} else {
+			status = removedLineStyle.Render("Syntax errors")
+		}
+	} else {
+		stateInfo := fmt.Sprintf("%d states", result.StatesGenerated)
+		if result.DistinctStates > 0 {
+			stateInfo = fmt.Sprintf("%d states (%d distinct)", result.StatesGenerated, result.DistinctStates)
+		}
+
+		if len(result.Violations) > 0 {
+			status = fmt.Sprintf("%s, %s", stateInfo, removedLineStyle.Render(fmt.Sprintf("%d violations", len(result.Violations))))
+		} else if result.Success {
+			status = fmt.Sprintf("%s, %s", stateInfo, fileExistsStyle.Render("no violations"))
+		} else {
+			status = fmt.Sprintf("%s, %s", stateInfo, removedLineStyle.Render("errors"))
+		}
+	}
+
+	return "    " + status
 }
 
 func renderNotes(m Model) []string {

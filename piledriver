@@ -89,6 +89,84 @@ def transition_phase(session_dir: Path, new_phase: str) -> bool:
     write_state(session_dir, state)
     return True
 
+# === Phase validation ===
+
+def is_file_filled(path: Path, template_marker: str = "<!--") -> bool:
+    """Check if a file has been filled beyond the template."""
+    if not path.exists():
+        return False
+    content = path.read_text()
+    # Remove HTML comments (template instructions)
+    lines = content.split("\n")
+    content_lines = []
+    in_comment = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("<!--"):
+            in_comment = True
+        if not in_comment and stripped and not stripped.startswith("#") and not stripped.startswith("|"):
+            # Skip table separators too
+            if not stripped.startswith("-"):
+                content_lines.append(line)
+        if "-->" in stripped:
+            in_comment = False
+    # Check for meaningful content beyond headers and empty bullets
+    meaningful = [l for l in content_lines if l.strip() and l.strip() != "-"]
+    return len(meaningful) > 0
+
+
+def validate_phase_transition(session_dir: Path, current_phase: str, new_phase: str) -> tuple:
+    """
+    Validate a phase transition.
+    Returns (allowed: bool, reason: str).
+    """
+    # Rescope to SCOPING is always allowed
+    if new_phase == "SCOPING":
+        return True, "Rescoping is always allowed"
+
+    # Closing from REPORT is always allowed
+    if new_phase == "IDLE" and current_phase == "REPORT":
+        return True, "Closing hunt from REPORT"
+
+    # Starting a hunt from IDLE
+    if current_phase == "IDLE" and new_phase == "SCOPING":
+        return True, "Starting hunt"
+
+    # Forward transitions with requirements
+    if current_phase == "SCOPING" and new_phase == "ASSUMPTIONS":
+        if is_file_filled(session_dir / "boundary.md"):
+            return True, "boundary.md has content"
+        return False, "boundary.md must be filled before advancing"
+
+    if current_phase == "ASSUMPTIONS" and new_phase == "VERIFICATION":
+        if is_file_filled(session_dir / "assumptions.md"):
+            return True, "assumptions.md has content"
+        return False, "assumptions.md must be filled before advancing"
+
+    if current_phase == "VERIFICATION" and new_phase == "REPORT":
+        if is_file_filled(session_dir / "model.tla", "\\*"):
+            return True, "model.tla has content"
+        return False, "model.tla must be filled before advancing"
+
+    # Check phase order
+    if new_phase not in PHASES:
+        return False, f"Invalid phase: {new_phase}"
+
+    try:
+        current_idx = PHASES.index(current_phase)
+        new_idx = PHASES.index(new_phase)
+    except ValueError:
+        return False, f"Invalid phase: {current_phase} or {new_phase}"
+
+    if new_idx > current_idx + 1:
+        return False, f"Cannot skip phases. Current: {current_phase}, requested: {new_phase}"
+
+    if new_idx < current_idx and new_phase != "SCOPING":
+        return False, f"Can only go back to SCOPING (rescope), not {new_phase}"
+
+    return False, f"Invalid transition from {current_phase} to {new_phase}"
+
+
 # === Stub file templates ===
 
 BOUNDARY_TEMPLATE = """# Boundary Definition
@@ -209,12 +287,20 @@ Replace this content with your own documentation.
 BUG_RUNSH_TEMPLATE = """#!/bin/bash
 set -e
 
+# === REPRODUCER RULES ===
+# 1. SINGLE TEST: This reproducer should test ONE specific bug
+# 2. COMMIT-FIRST: BASE_COMMIT and FIX_COMMIT must be set BEFORE running
+# 3. NO DIRECT IMPORTS: Test the installed code, not patched copies
+# 4. SAME TEST: The same test must FAIL on base and PASS on fix
+#
+# Success = tests FAIL on BASE_COMMIT, PASS on FIX_COMMIT
+
 # === CONFIGURATION ===
-# Modify these for your specific bug reproducer
-REPO_PATH="../../../termite"  # Path to repo under scrutiny
-BASE_COMMIT="abc123"          # Commit where bug exists
-FIX_COMMIT="def456"           # Commit with the fix
-TEST_CMD="go test -v ./path/to/tests/..."
+# YOU MUST SET THESE VALUES before running piledriver test:
+REPO_PATH="../../../<target-repo>"  # Path to repo under scrutiny
+BASE_COMMIT="<commit-sha>"          # Commit where bug EXISTS (tests should FAIL)
+FIX_COMMIT="<commit-sha>"           # Commit with fix APPLIED (tests should PASS)
+TEST_CMD="go test -v ./path/to/tests/..."  # Single test or test pattern
 
 # === HELPER FUNCTIONS ===
 run_tests() {
@@ -271,6 +357,156 @@ echo "Success: $SUCCESS"
 """
 
 
+# === Guidance Templates ===
+
+GUIDANCE = {
+    "init": {
+        "summary": "Session '{session}' initialized in IDLE phase.",
+        "next_steps": [
+            "Run `piledriver set-phase {session} SCOPING` to begin the hunt",
+            "Edit `.piledriver/{session}/boundary.md` to define:",
+            "  - The suspected bug (Suspect section)",
+            "  - Components to model (Inside section)",
+            "  - Components to treat as black boxes (Outside section)",
+            "  - Interface points where inside meets outside",
+        ],
+        "reminder": "Wait for human approval before advancing past SCOPING."
+    },
+    "set-phase:SCOPING": {
+        "summary": "Entered SCOPING phase.",
+        "next_steps": [
+            "Complete `.piledriver/{session}/boundary.md`:",
+            "  - Document the suspect",
+            "  - List what's INSIDE (to be modeled)",
+            "  - List what's OUTSIDE (assumptions)",
+            "  - Define interface points",
+            "Ask the human to review the boundary",
+        ],
+        "reminder": "Use `piledriver set-phase {session} ASSUMPTIONS` after human approval."
+    },
+    "set-phase:ASSUMPTIONS": {
+        "summary": "Entered ASSUMPTIONS phase.",
+        "next_steps": [
+            "Complete `.piledriver/{session}/assumptions.md`:",
+            "  - For EACH interface point, document assumptions",
+            "  - Mark risk level (LOW/MEDIUM/HIGH)",
+            "  - Propose verification ideas",
+            "Ask the human to review assumptions",
+        ],
+        "reminder": "Use `piledriver set-phase {session} VERIFICATION` after human approval."
+    },
+    "set-phase:VERIFICATION": {
+        "summary": "Entered VERIFICATION phase.",
+        "next_steps": [
+            "Write the TLA+ specification in `.piledriver/{session}/model.tla`",
+            "Create `.piledriver/{session}/model.cfg` with invariants to check",
+            "Run syntax check: `piledriver check {session} --sany`",
+            "Run model checker: `piledriver check {session}`",
+            "Analyze counterexamples or expand boundary if no issues found",
+        ],
+        "reminder": "If the model reveals the boundary was wrong, use `piledriver set-phase {session} SCOPING` to rescope."
+    },
+    "set-phase:REPORT": {
+        "summary": "Entered REPORT phase.",
+        "next_steps": [
+            "Create `.piledriver/{session}/report.md` with:",
+            "  - Summary of findings",
+            "  - TLA+ model checking results",
+            "  - Assumption analysis",
+            "  - Recommendations",
+            "Generate PR draft: `piledriver pr {session}`",
+        ],
+        "reminder": "Use `piledriver set-phase {session} IDLE` to close the hunt."
+    },
+    "set-phase:IDLE": {
+        "summary": "Hunt closed. Session returned to IDLE.",
+        "next_steps": [
+            "Review `.piledriver/{session}/report.md` for findings",
+            "If PR was drafted, create it with `gh pr create --body-file .piledriver/{session}/pr-draft.md`",
+        ],
+        "reminder": "Start a new hunt anytime with `piledriver set-phase {session} SCOPING`."
+    },
+    "bug": {
+        "summary": "Bug reproducer '{bug}' created.",
+        "next_steps": [
+            "Edit `.piledriver/{session}/reproducers/{bug}/run.sh`:",
+            "  - Set REPO_PATH to the repository under test",
+            "  - Set BASE_COMMIT to the commit where bug exists",
+            "  - Set FIX_COMMIT to the commit with the fix",
+            "  - Set TEST_CMD to the test command",
+            "Run validation: `piledriver test {session} {bug}`",
+        ],
+        "reminder": "Success = tests FAIL on base commit, PASS on fix commit. The fix must be COMMITTED before testing."
+    },
+    "check:success": {
+        "summary": "TLC completed. No invariant violations found.",
+        "next_steps": [
+            "Consider expanding the boundary to check more",
+            "Verify assumptions hold in real code",
+            "Move to REPORT phase if confident: `piledriver set-phase {session} REPORT`",
+        ],
+        "reminder": "No violations does not mean no bugs - only that the model is consistent."
+    },
+    "check:violation": {
+        "summary": "TLC found invariant violation(s).",
+        "next_steps": [
+            "Study the counterexample trace",
+            "Determine if this is a real bug or a modeling error",
+            "If modeling error: rescope with `piledriver set-phase {session} SCOPING`",
+            "If real bug: document finding and create reproducer with `piledriver bug {session} <name>`",
+        ],
+        "reminder": "Counterexamples may indicate real bugs OR incorrect model assumptions."
+    },
+    "check:syntax_error": {
+        "summary": "SANY found syntax errors in the TLA+ specification.",
+        "next_steps": [
+            "Fix the syntax errors in `.piledriver/{session}/model.tla`",
+            "Re-run syntax check: `piledriver check {session} --sany`",
+        ],
+        "reminder": "Common issues: missing operators, unbalanced parentheses, invalid identifiers."
+    },
+    "pr": {
+        "summary": "PR draft generated at `.piledriver/{session}/pr-draft.md`.",
+        "next_steps": [
+            "Review and edit the PR draft as needed",
+            "Create the PR: `gh pr create --title \"<title>\" --body-file .piledriver/{session}/pr-draft.md`",
+        ],
+        "reminder": "The draft is a starting point - refine it before creating the actual PR."
+    },
+}
+
+
+def format_guidance(template_key: str, **kwargs) -> str:
+    """Format guidance output for a command."""
+    template = GUIDANCE.get(template_key, {})
+    if not template:
+        return ""
+
+    lines = []
+
+    # Summary
+    summary = template.get("summary", "").format(**kwargs)
+    if summary:
+        lines.append(f"\n{summary}")
+        lines.append("")
+
+    # Next steps
+    steps = template.get("next_steps", [])
+    if steps:
+        lines.append("Next steps:")
+        for step in steps:
+            formatted = step.format(**kwargs)
+            lines.append(f"  {formatted}")
+        lines.append("")
+
+    # Reminder
+    reminder = template.get("reminder", "").format(**kwargs)
+    if reminder:
+        lines.append(f"Note: {reminder}")
+
+    return "\n".join(lines)
+
+
 def get_piledriver_root() -> Path:
     """Find the .piledriver directory, searching upward from cwd."""
     cwd = Path.cwd()
@@ -316,6 +552,10 @@ def cmd_init(args):
     print(f"  - assumptions.md")
     print(f"  - model.tla")
     print(f"  - probe.md")
+
+    # Print guidance
+    print(format_guidance("init", session=session_name))
+
     return 0
 
 
@@ -353,10 +593,10 @@ def cmd_bug(args):
     print(f"Created bug reproducer '{bug_name}' at {bug_dir}")
     print(f"  - README.md")
     print(f"  - run.sh (executable)")
-    print()
-    print("Next steps:")
-    print("  1. Edit run.sh with your repo path, commits, and test command")
-    print("  2. Run: piledriver test {} {}".format(session_name, bug_name))
+
+    # Print guidance
+    print(format_guidance("bug", session=session_name, bug=bug_name))
+
     return 0
 
 
@@ -592,6 +832,364 @@ def cmd_status(args):
     return 0
 
 
+# === TLC helpers ===
+
+def find_tla2tools() -> Path | None:
+    """Find tla2tools.jar from various locations."""
+    candidates = [
+        Path.cwd() / "tools" / "tla2tools.jar",
+        Path(__file__).resolve().parent / "tools" / "tla2tools.jar",
+        Path(os.environ.get("PILEDRIVER_HOME", "")) / "tools" / "tla2tools.jar" if os.environ.get("PILEDRIVER_HOME") else None,
+        Path(os.environ.get("TLA2TOOLS", "")) if os.environ.get("TLA2TOOLS") else None,
+    ]
+
+    for path in candidates:
+        if path and path.exists():
+            return path
+    return None
+
+
+def parse_tlc_output(output: str) -> dict:
+    """Parse TLC output for key information."""
+    import re
+
+    result = {
+        "success": True,
+        "states_generated": 0,
+        "distinct_states": 0,
+        "violations": [],
+        "errors": [],
+    }
+
+    for line in output.split("\n"):
+        # Parse state counts
+        if "states generated" in line.lower():
+            match = re.search(r"(\d+)\s+states generated.*?(\d+)\s+distinct", line, re.IGNORECASE)
+            if match:
+                result["states_generated"] = int(match.group(1))
+                result["distinct_states"] = int(match.group(2))
+
+        # Detect errors
+        if line.strip().startswith("Error:") or "Semantic error" in line:
+            result["errors"].append(line.strip())
+            result["success"] = False
+
+        # Detect invariant violations
+        if "Invariant" in line and "violated" in line.lower():
+            result["violations"].append(line.strip())
+            result["success"] = False
+
+        # Other violation indicators
+        if "Error: Invariant" in line or "is violated" in line:
+            if line.strip() not in result["violations"]:
+                result["violations"].append(line.strip())
+            result["success"] = False
+
+    return result
+
+
+def cmd_check(args):
+    """Run TLC model checker on session spec."""
+    session_name = args.session_name
+    sany_only = getattr(args, 'sany', False)
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    # Find model files
+    model_tla = session_dir / "model.tla"
+    model_cfg = session_dir / "model.cfg"
+
+    if not model_tla.exists():
+        print(f"Error: No model.tla found in {session_dir}")
+        return 1
+
+    # Find tla2tools.jar
+    tla2tools = find_tla2tools()
+    if not tla2tools:
+        print("Error: Cannot find tla2tools.jar")
+        print("Set PILEDRIVER_HOME or TLA2TOOLS environment variable,")
+        print("or place tla2tools.jar in ./tools/")
+        return 1
+
+    # Create output directory
+    tlc_out = session_dir / "_tlc_out"
+    tlc_out.mkdir(exist_ok=True)
+
+    # Build command
+    if sany_only:
+        cmd = ["java", "-cp", str(tla2tools), "tla2sany.SANY", str(model_tla)]
+        print(f"Running syntax check on {model_tla.name}...")
+    else:
+        cmd = [
+            "java", "-jar", str(tla2tools),
+            str(model_tla),
+            "-metadir", str(tlc_out),
+        ]
+        if model_cfg.exists():
+            cmd.extend(["-config", str(model_cfg)])
+        print(f"Running TLC on {model_tla.name}...")
+
+    print(f"Command: {' '.join(cmd)}")
+    print("-" * 60)
+
+    # Run
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(session_dir),
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
+        )
+        output = result.stdout + result.stderr
+        print(output)
+    except subprocess.TimeoutExpired:
+        print("Error: TLC timed out after 10 minutes")
+        return 1
+    except Exception as e:
+        print(f"Error running TLC: {e}")
+        return 1
+
+    print("-" * 60)
+
+    # Parse and summarize
+    parsed = parse_tlc_output(output)
+
+    # Update state.json with results
+    state = read_state(session_dir)
+    if state:
+        if "tlc_results" not in state:
+            state["tlc_results"] = []
+        state["tlc_results"].append({
+            "timestamp": datetime.now().isoformat(),
+            "sany_only": sany_only,
+            "success": parsed["success"],
+            "states_generated": parsed["states_generated"],
+            "distinct_states": parsed["distinct_states"],
+            "violations": parsed["violations"][:5],  # Limit stored violations
+        })
+        # Keep only last 10 results
+        state["tlc_results"] = state["tlc_results"][-10:]
+        write_state(session_dir, state)
+
+    # Print summary
+    print()
+    print("Summary:")
+    if sany_only:
+        if parsed["errors"]:
+            print("  Syntax errors found:")
+            for err in parsed["errors"][:5]:
+                print(f"    {err}")
+            print(format_guidance("check:syntax_error", session=session_name))
+        else:
+            print("  Syntax OK")
+    else:
+        print(f"  States: {parsed['states_generated']} generated, {parsed['distinct_states']} distinct")
+        if parsed["violations"]:
+            print(f"  Violations: {len(parsed['violations'])}")
+            for v in parsed["violations"][:3]:
+                print(f"    {v}")
+            print(format_guidance("check:violation", session=session_name))
+        elif parsed["errors"]:
+            print("  Errors found:")
+            for err in parsed["errors"][:3]:
+                print(f"    {err}")
+        else:
+            print("  No violations found")
+            print(format_guidance("check:success", session=session_name))
+
+    return 0 if parsed["success"] else 1
+
+
+# === PR draft generation ===
+
+PR_DRAFT_TEMPLATE = """# {title}
+
+## Summary
+{summary}
+
+## Key Findings
+{findings}
+
+## Changes
+{changes}
+
+## Test Plan
+{test_plan}
+
+---
+*Generated by piledriver from session `{session}`*
+"""
+
+
+def extract_section(content: str, header: str, default: str = "") -> str:
+    """Extract a markdown section by header."""
+    lines = content.split("\n")
+    in_section = False
+    section_lines = []
+
+    for line in lines:
+        if line.startswith(f"## {header}"):
+            in_section = True
+            continue
+        elif line.startswith("## ") and in_section:
+            break
+        elif in_section:
+            section_lines.append(line)
+
+    return "\n".join(section_lines).strip() or default
+
+
+def cmd_pr(args):
+    """Generate a PR draft from a session."""
+    session_name = args.session_name
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    # Read report.md if it exists
+    report_path = session_dir / "report.md"
+    report_content = ""
+    if report_path.exists():
+        report_content = report_path.read_text()
+    else:
+        print(f"Warning: No report.md found in {session_dir}")
+        print("Creating basic PR draft from session info...")
+
+    # Parse report for key sections
+    summary = extract_section(report_content, "Summary", default="Investigation of suspected bug.")
+    findings = extract_section(report_content, "Findings", default="- See report.md for details")
+    recommendations = extract_section(report_content, "Recommendations", default="- Review changes")
+
+    # Condense findings to first 5 bullet points
+    findings_lines = [l for l in findings.split("\n") if l.strip().startswith("-") or l.strip().startswith("*")][:5]
+    condensed_findings = "\n".join(findings_lines) if findings_lines else "- " + findings[:200]
+
+    # Build test plan from reproducers
+    reproducers_dir = session_dir / "reproducers"
+    test_plan_items = []
+    if reproducers_dir.exists():
+        for bug_dir in sorted(reproducers_dir.iterdir()):
+            if bug_dir.is_dir():
+                results_file = bug_dir / "results.json"
+                status = "not run"
+                if results_file.exists():
+                    try:
+                        with open(results_file) as f:
+                            data = json.load(f)
+                        status = "PASS" if data.get("success") else "FAIL"
+                    except (json.JSONDecodeError, KeyError):
+                        status = "error"
+                test_plan_items.append(f"- [ ] `{bug_dir.name}`: {status}")
+
+    if not test_plan_items:
+        test_plan_items = ["- [ ] Manual verification required"]
+
+    # Generate title
+    title_base = session_name.replace("-", " ").replace("_", " ").title()
+    title = f"Fix: {title_base}"
+
+    # Condense summary
+    summary_condensed = summary.strip()[:500]
+    if len(summary.strip()) > 500:
+        summary_condensed += "..."
+
+    # Write PR draft
+    pr_draft = PR_DRAFT_TEMPLATE.format(
+        title=title,
+        summary=summary_condensed,
+        findings=condensed_findings,
+        changes=recommendations,
+        test_plan="\n".join(test_plan_items),
+        session=session_name
+    )
+
+    output_path = session_dir / "pr-draft.md"
+    output_path.write_text(pr_draft)
+
+    print(f"PR draft generated: {output_path}")
+    print()
+    print("Preview:")
+    print("-" * 40)
+    # Print first 25 lines
+    for line in pr_draft.split("\n")[:25]:
+        print(line)
+    if len(pr_draft.split("\n")) > 25:
+        print("...")
+    print("-" * 40)
+
+    # Print guidance
+    print(format_guidance("pr", session=session_name))
+
+    return 0
+
+
+def cmd_set_phase(args):
+    """Transition to a new phase with validation."""
+    session_name = args.session_name
+    new_phase = args.phase.upper()
+    force = getattr(args, 'force', False)
+
+    if new_phase not in PHASES:
+        print(f"Error: Invalid phase '{new_phase}'")
+        print(f"Valid phases: {', '.join(PHASES)}")
+        return 1
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    state = read_state(session_dir)
+    if state is None:
+        print(f"Error: No state.json found for session '{session_name}'")
+        return 1
+
+    current_phase = state.get("current_phase", "IDLE")
+
+    # Already in this phase?
+    if current_phase == new_phase:
+        print(f"Already in {new_phase} phase.")
+        return 0
+
+    # Validate transition
+    allowed, reason = validate_phase_transition(session_dir, current_phase, new_phase)
+
+    if not allowed and not force:
+        print(f"Error: Cannot transition from {current_phase} to {new_phase}")
+        print(f"Reason: {reason}")
+        print()
+        print("Use --force to override (not recommended)")
+        return 1
+
+    if not allowed and force:
+        print(f"Warning: Forcing transition despite: {reason}")
+
+    # Perform transition
+    if not transition_phase(session_dir, new_phase):
+        print(f"Error: Failed to transition to {new_phase}")
+        return 1
+
+    print(f"Phase: {current_phase} -> {new_phase}")
+
+    # Print guidance
+    guidance_key = f"set-phase:{new_phase}"
+    print(format_guidance(guidance_key, session=session_name))
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Piledriver: TLA+ Bug Hunter CLI",
@@ -599,14 +1197,20 @@ def main():
         epilog="""
 Commands:
   init <session>              Start a new analysis session
+  set-phase <session> <phase> Transition to a new phase
   bug <session> <bug>         Create a bug reproducer scaffold
   test <session> [bug]        Run before/after test validation
   status [session]            Show current state
+  check <session>             Run TLC model checker
+  pr <session>                Generate PR draft from report
 
 Examples:
   piledriver init hugot-usage
+  piledriver set-phase hugot-usage SCOPING
   piledriver bug hugot-usage bug1_close_race
   piledriver test hugot-usage
+  piledriver check hugot-usage
+  piledriver pr hugot-usage
   piledriver status
 """
     )
@@ -631,6 +1235,21 @@ Examples:
     status_parser = subparsers.add_parser("status", help="Show current state")
     status_parser.add_argument("session_name", nargs="?", help="Session to show details for")
 
+    # set-phase command
+    set_phase_parser = subparsers.add_parser("set-phase", help="Transition to a new phase")
+    set_phase_parser.add_argument("session_name", help="Session to transition")
+    set_phase_parser.add_argument("phase", help="Target phase (SCOPING, ASSUMPTIONS, VERIFICATION, REPORT, IDLE)")
+    set_phase_parser.add_argument("--force", action="store_true", help="Force transition even if validation fails")
+
+    # check command
+    check_parser = subparsers.add_parser("check", help="Run TLC model checker")
+    check_parser.add_argument("session_name", help="Session to check")
+    check_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
+
+    # pr command
+    pr_parser = subparsers.add_parser("pr", help="Generate PR draft from report")
+    pr_parser.add_argument("session_name", help="Session to generate PR for")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -645,6 +1264,12 @@ Examples:
         return cmd_test(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "set-phase":
+        return cmd_set_phase(args)
+    elif args.command == "check":
+        return cmd_check(args)
+    elif args.command == "pr":
+        return cmd_pr(args)
     else:
         parser.print_help()
         return 1
