@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/dovinmu/piledriver/pilemonkey/store"
+	"github.com/dovinmu/piledriver/pilemonkey/syntax"
 )
 
 var (
@@ -48,6 +49,9 @@ var (
 	emptyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6272a4")).
 			Italic(true)
+
+	// Syntax highlighter instance
+	highlighter = syntax.New()
 )
 
 func renderView(m Model) string {
@@ -142,7 +146,7 @@ func renderDiffContent(m Model, height int) string {
 			lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("#8be9fd")).Render(hunkHeader))
 
 			for _, line := range hunk.Lines {
-				lineStr := renderDiffLine(line, m.width)
+				lineStr := renderDiffLine(line, m.width, cs.FilePath)
 				lines = append(lines, lineStr)
 			}
 		}
@@ -177,7 +181,7 @@ func renderDiffContent(m Model, height int) string {
 	return strings.Join(visibleLines, "\n") + "\n"
 }
 
-func renderDiffLine(line store.DiffLine, width int) string {
+func renderDiffLine(line store.DiffLine, width int, filename string) string {
 	var prefix string
 	var style lipgloss.Style
 	var lineNum string
@@ -207,7 +211,16 @@ func renderDiffLine(line store.DiffLine, width int) string {
 		content = content[:maxContent-3] + "..."
 	}
 
-	return fmt.Sprintf("%s %s %s", lineNum, style.Render(prefix), style.Render(content))
+	// Apply syntax highlighting for added/removed lines
+	var styledContent string
+	if line.Type == store.LineAdded || line.Type == store.LineRemoved {
+		tokens := highlighter.Highlight(filename, content)
+		styledContent = syntax.RenderLine(tokens, style)
+	} else {
+		styledContent = style.Render(content)
+	}
+
+	return fmt.Sprintf("%s %s %s", lineNum, style.Render(prefix), styledContent)
 }
 
 func renderDiffFooter(m Model) string {

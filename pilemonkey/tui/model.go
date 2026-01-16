@@ -130,6 +130,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewMode = ViewModeOverview
 		} else {
 			m.viewMode = ViewModeDiff
+			// When switching to diff mode in live mode, jump to newest changeset
+			if m.liveMode {
+				m.currentIndex = m.store.Size() - 1
+				m.scrollOffset = 0
+			}
 		}
 		return m, nil
 	}

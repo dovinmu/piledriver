@@ -105,18 +105,18 @@ func main() {
 
 	// Try to find and load piledriver session
 	var sessionInfo *state.SessionInfo
+	var activeSession string
 	piledriverDir, _ := state.FindPiledriverDir(absDir)
 	if piledriverDir != "" {
-		var session string
 		if *sessionName != "" {
-			session = *sessionName
+			activeSession = *sessionName
 		} else {
 			// Auto-detect most recent session
-			session, _ = state.FindMostRecentSession(piledriverDir)
+			activeSession, _ = state.FindMostRecentSession(piledriverDir)
 		}
 
-		if session != "" {
-			info, err := state.GetSessionInfo(piledriverDir, session)
+		if activeSession != "" {
+			info, err := state.GetSessionInfo(piledriverDir, activeSession)
 			if err == nil {
 				sessionInfo = info
 				model.SetSessionInfo(sessionInfo)
@@ -133,12 +133,13 @@ func main() {
 	}
 
 	// Start a goroutine to periodically refresh session state
-	if sessionInfo != nil {
+	// Poll regardless of initial load success so we can recover from errors
+	if piledriverDir != "" && activeSession != "" {
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
-				info, err := state.GetSessionInfo(piledriverDir, sessionInfo.Name)
+				info, err := state.GetSessionInfo(piledriverDir, activeSession)
 				if err == nil {
 					p.Send(tui.StateUpdateMsg{SessionInfo: info})
 				}

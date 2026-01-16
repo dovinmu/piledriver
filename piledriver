@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 PILEDRIVER_DIR = ".piledriver"
@@ -45,7 +45,7 @@ def write_state(session_dir: Path, state: dict) -> None:
     state_file = session_dir / "state.json"
     lock_file = session_dir / "state.json.lock"
 
-    state["last_modified"] = datetime.now().isoformat()
+    state["last_modified"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
     with open(lock_file, "w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)  # Exclusive lock for writing
@@ -58,7 +58,7 @@ def write_state(session_dir: Path, state: dict) -> None:
 
 def create_initial_state(session_name: str) -> dict:
     """Create a new state dictionary for a session."""
-    now = datetime.now().isoformat()
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     return {
         "session": session_name,
         "current_phase": "IDLE",
@@ -83,7 +83,7 @@ def transition_phase(session_dir: Path, new_phase: str) -> bool:
     state["current_phase"] = new_phase
     state["phase_history"].append({
         "phase": new_phase,
-        "entered": datetime.now().isoformat()
+        "entered": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     })
 
     write_state(session_dir, state)
@@ -966,7 +966,7 @@ def cmd_check(args):
         if "tlc_results" not in state:
             state["tlc_results"] = []
         state["tlc_results"].append({
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             "sany_only": sany_only,
             "success": parsed["success"],
             "states_generated": parsed["states_generated"],
