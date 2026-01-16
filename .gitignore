@@ -11,3 +11,6 @@ result
 # Test files
 hello.tla
 hello.cfg
+
+# binaries & friends
+tla2tools.jar

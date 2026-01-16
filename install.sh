@@ -2,12 +2,11 @@
 set -e
 
 # Piledriver installer for Claude Code
-# Installs piledriver as a Claude Code skill
+# Installs piledriver as a Claude Code command
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
-SKILLS_DIR="$CLAUDE_DIR/skills"
-PILEDRIVER_SKILL_DIR="$SKILLS_DIR/piledriver"
+COMMANDS_DIR="$CLAUDE_DIR/commands"
 
 echo "Piledriver Installer"
 echo "===================="
@@ -37,18 +36,21 @@ echo "Checking TLA+ tools..."
 "$SCRIPT_DIR/tools/setup.sh"
 echo
 
-# Create skills directory if needed
-mkdir -p "$PILEDRIVER_SKILL_DIR"
+# Create commands directory if needed
+mkdir -p "$COMMANDS_DIR"
 
-# Generate SKILL.md with the full path to piledriver
-cat > "$PILEDRIVER_SKILL_DIR/SKILL.md" << EOF
-# Piledriver Skill
+# Generate piledriver.md command file
+cat > "$COMMANDS_DIR/piledriver.md" << EOF
+---
+description: Systematic bug hunting using TLA+ formal methods
+argument-hint: <suspect-description>
+---
 
-Use this skill when the user wants to do systematic bug hunting using TLA+ formal methods.
+# Piledriver Bug Hunt
 
-Trigger: User says "/piledriver" or asks to hunt for bugs using formal methods.
+Start a systematic bug hunt using TLA+ formal methods.
 
-## Piledriver Executable
+## Piledriver CLI
 
 The piledriver CLI is located at:
 \`\`\`
@@ -63,6 +65,12 @@ $SCRIPT_DIR/piledriver test <session-name> [bug-name]
 $SCRIPT_DIR/piledriver status [session-name]
 \`\`\`
 
+## Starting the Hunt
+
+The user wants to investigate: \$ARGUMENTS
+
+Begin by initializing a hunt session and entering SCOPING mode.
+
 ## Important
 
 The \`.piledriver/\` directory is created in the **current working directory** where Claude is running, NOT in the piledriver source directory. This is the correct behavior - each project gets its own .piledriver/ for its bug hunts.
@@ -72,12 +80,9 @@ The \`.piledriver/\` directory is created in the **current working directory** w
 EOF
 
 # Append the full CLAUDE.md content
-cat "$SCRIPT_DIR/CLAUDE.md" >> "$PILEDRIVER_SKILL_DIR/SKILL.md"
+cat "$SCRIPT_DIR/CLAUDE.md" >> "$COMMANDS_DIR/piledriver.md"
 
-echo "Installed piledriver skill to: $PILEDRIVER_SKILL_DIR"
-echo
-echo "Files created:"
-echo "  - $PILEDRIVER_SKILL_DIR/SKILL.md"
+echo "Installed piledriver command to: $COMMANDS_DIR/piledriver.md"
 echo
 echo "Usage:"
 echo "  From any directory, run 'claude' and use:"
