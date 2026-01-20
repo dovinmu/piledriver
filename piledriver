@@ -676,13 +676,29 @@ def cmd_test(args):
 
         # Evaluate results
         success = data.get("success", False)
-        base_result = data.get("base_result", {})
-        fix_result = data.get("fix_result", {})
+        base_result = data.get("base_result") or {}
+        fix_result = data.get("fix_result")
+        fix_commit = data.get("fix_commit")
+
+        # Handle intermediate state: bug confirmed but no fix commit set
+        if fix_result is None or fix_commit is None:
+            if success == "bug_confirmed":
+                status = "PENDING"
+                detail = "bug confirmed - set FIX_COMMIT in run.sh to validate fix"
+            elif success == "inconclusive":
+                status = "PENDING"
+                detail = "bug not reliably reproduced - adjust test or retry"
+            else:
+                status = "ERROR"
+                detail = f"fix_result is null but success={success!r} (expected 'bug_confirmed')"
+            print(f"[{bug}] {status} ({detail})")
+            results.append((bug, status, detail))
+            continue
 
         base_failed = base_result.get("failed", 0)
         fix_failed = fix_result.get("failed", 0)
 
-        if success:
+        if success is True:
             status = "PASS"
             detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
         else:
@@ -760,14 +776,24 @@ def cmd_status(args):
                             with open(results_file) as f:
                                 data = json.load(f)
                             success = data.get("success", False)
-                            base_result = data.get("base_result", {})
-                            fix_result = data.get("fix_result", {})
-                            base_failed = base_result.get("failed", 0)
-                            fix_failed = fix_result.get("failed", 0)
+                            base_result = data.get("base_result") or {}
+                            fix_result = data.get("fix_result")
+                            fix_commit = data.get("fix_commit")
 
-                            if success:
+                            if fix_result is None or fix_commit is None:
+                                if success == "bug_confirmed":
+                                    status = "PENDING (bug confirmed - set FIX_COMMIT)"
+                                elif success == "inconclusive":
+                                    status = "PENDING (inconclusive - retry)"
+                                else:
+                                    status = "ERROR (fix_result is null)"
+                            elif success is True:
+                                base_failed = base_result.get("failed", 0)
+                                fix_failed = fix_result.get("failed", 0)
                                 status = f"PASS (base: {base_failed} fail, fix: {fix_failed} fail)"
                             else:
+                                base_failed = base_result.get("failed", 0)
+                                fix_failed = fix_result.get("failed", 0)
                                 status = f"FAIL (base: {base_failed} fail, fix: {fix_failed} fail)"
                         except (json.JSONDecodeError, KeyError):
                             status = "ERROR (invalid results.json)"
