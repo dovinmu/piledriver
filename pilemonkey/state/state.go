@@ -73,6 +73,7 @@ type SessionState struct {
 	PhaseHistory []PhaseEntry     `json:"phase_history"`
 	PhaseNotes   map[Phase]string `json:"phase_notes"`
 	TLCResults   []TLCResult      `json:"tlc_results,omitempty"`
+	Summary      string           `json:"summary,omitempty"` // High-level task description
 	Created      time.Time        `json:"created"`
 	LastModified time.Time        `json:"last_modified"`
 }

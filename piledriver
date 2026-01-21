@@ -1864,6 +1864,43 @@ def cmd_set_phase(args):
     return 0
 
 
+def cmd_summary(args):
+    """Set or view the task summary for a session."""
+    session_name = args.session_name
+    summary_text = args.summary
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    state = read_state(session_dir)
+    if not state:
+        print(f"Error: No state.json found for session '{session_name}'")
+        return 1
+
+    if summary_text is None:
+        # View current summary
+        current_summary = state.get("summary", "")
+        if current_summary:
+            print(f"Summary: {current_summary}")
+        else:
+            print("No summary set.")
+            print(f"Set with: piledriver summary {session_name} \"<summary>\"")
+        return 0
+
+    # Set summary
+    state["summary"] = summary_text
+    state["last_modified"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    write_state(session_dir, state)
+
+    print(f"Summary updated: {summary_text}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Piledriver: TLA+ Bug Hunter CLI",
@@ -1932,6 +1969,11 @@ Examples:
     technique_parser.add_argument("technique", nargs="?",
                                   help="Technique to set (tla+, property-test, fuzz, diff-test, manual)")
 
+    # summary command
+    summary_parser = subparsers.add_parser("summary", help="View or set task summary")
+    summary_parser.add_argument("session_name", help="Session to configure")
+    summary_parser.add_argument("summary", nargs="?", help="Summary text (view if not provided)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -1954,6 +1996,8 @@ Examples:
         return cmd_pr(args)
     elif args.command == "technique":
         return cmd_technique(args)
+    elif args.command == "summary":
+        return cmd_summary(args)
     else:
         parser.print_help()
         return 1

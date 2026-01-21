@@ -28,11 +28,17 @@ var (
 				Bold(true).
 				Padding(0, 1)
 
-	fileExistsStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#50fa7b"))
+	fileFilledStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#50fa7b")) // Green - has real content
+
+	fileTemplateStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#f1fa8c")) // Yellow - just template
 
 	fileMissingStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#6272a4"))
+				Foreground(lipgloss.Color("#6272a4")) // Gray - doesn't exist
+
+	// Alias for backwards compatibility
+	fileExistsStyle = fileFilledStyle
 
 	// TLC status styles - semantic colors for bug hunting context
 	tlcViolationStyle = lipgloss.NewStyle().
@@ -109,6 +115,16 @@ func renderOverviewContent(m Model, height int) string {
 	var lines []string
 
 	lines = append(lines, "")
+
+	// Task summary (if set)
+	if m.sessionInfo != nil && m.sessionInfo.State != nil && m.sessionInfo.State.Summary != "" {
+		lines = append(lines, sectionTitleStyle.Render("  Task Summary"))
+		lines = append(lines, "")
+		// Wrap summary to width, indent
+		summary := "    " + m.sessionInfo.State.Summary
+		lines = append(lines, summary)
+		lines = append(lines, "")
+	}
 
 	// Phase progress
 	lines = append(lines, sectionTitleStyle.Render("  Phase Progress"))
@@ -200,7 +216,7 @@ func renderPhaseProgress(m Model) []string {
 func renderFileChecklist(m Model) []string {
 	type fileCheck struct {
 		name   string
-		exists bool
+		status state.FileStatus
 	}
 
 	var files []fileCheck
@@ -215,22 +231,26 @@ func renderFileChecklist(m Model) []string {
 		}
 	} else {
 		files = []fileCheck{
-			{"reconnaissance.md", false},
-			{"boundary.md", false},
-			{"assumptions.md", false},
-			{"model.tla", false},
-			{"model.cfg", false},
-			{"probe.md", false},
+			{"reconnaissance.md", state.FileMissing},
+			{"boundary.md", state.FileMissing},
+			{"assumptions.md", state.FileMissing},
+			{"model.tla", state.FileMissing},
+			{"model.cfg", state.FileMissing},
+			{"probe.md", state.FileMissing},
 		}
 	}
 
 	var line1Parts, line2Parts []string
 	for i, f := range files {
 		var icon, styled string
-		if f.exists {
+		switch f.status {
+		case state.FileFilled:
 			icon = "✓"
-			styled = fileExistsStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
-		} else {
+			styled = fileFilledStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
+		case state.FileTemplate:
+			icon = "◐" // Half-filled circle for template
+			styled = fileTemplateStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
+		default: // FileMissing
 			icon = "○"
 			styled = fileMissingStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
 		}
