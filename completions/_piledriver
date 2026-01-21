@@ -1,0 +1,108 @@
+#compdef piledriver
+# Zsh completion for piledriver
+# Install: copy to a directory in your $fpath (e.g., ~/.zsh/completions/)
+# Then add to ~/.zshrc: fpath=(~/.zsh/completions $fpath); autoload -Uz compinit; compinit
+
+_piledriver() {
+    local -a commands phases techniques
+    commands=(
+        'init:Start a new analysis session'
+        'set-phase:Transition to a new phase'
+        'bug:Create a bug reproducer scaffold'
+        'test:Run before/after test validation'
+        'status:Show current state'
+        'check:Run TLC model checker'
+        'pr:Generate PR draft from report'
+        'technique:View or set verification technique'
+    )
+    phases=(RECONNAISSANCE SCOPING ASSUMPTIONS VERIFICATION REPORT)
+    techniques=('tla+' 'property-test' 'fuzz' 'diff-test' 'manual')
+
+    _arguments -C \
+        '1: :->command' \
+        '*:: :->args'
+
+    case $state in
+        command)
+            _describe -t commands 'piledriver command' commands
+            ;;
+        args)
+            case $words[1] in
+                init)
+                    _arguments \
+                        '1:session name:' \
+                        '--skip-recon[Skip RECONNAISSANCE phase, start in SCOPING]'
+                    ;;
+                set-phase)
+                    _arguments \
+                        '1:session:_piledriver_sessions' \
+                        '2:phase:($phases)' \
+                        '--force[Force transition even if validation fails]'
+                    ;;
+                bug)
+                    _arguments \
+                        '1:session:_piledriver_sessions' \
+                        '2:bug name:'
+                    ;;
+                test)
+                    _arguments \
+                        '1:session:_piledriver_sessions' \
+                        '2:bug:_piledriver_bugs'
+                    ;;
+                status)
+                    _arguments \
+                        '1:session:_piledriver_sessions'
+                    ;;
+                check)
+                    _arguments \
+                        '1:session:_piledriver_sessions' \
+                        '--sany[Syntax check only (no model checking)]'
+                    ;;
+                pr)
+                    _arguments \
+                        '1:session:_piledriver_sessions'
+                    ;;
+                technique)
+                    _arguments \
+                        '1:session:_piledriver_sessions' \
+                        '2:technique:($techniques)'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_piledriver_sessions() {
+    local piledriver_dir
+    piledriver_dir=$(_piledriver_find_dir)
+    if [[ -n "$piledriver_dir" && -d "$piledriver_dir" ]]; then
+        local -a sessions
+        sessions=(${piledriver_dir}/*(/:t))
+        sessions=(${sessions:#.*})  # Remove hidden directories
+        _describe -t sessions 'session' sessions
+    fi
+}
+
+_piledriver_bugs() {
+    local piledriver_dir session
+    piledriver_dir=$(_piledriver_find_dir)
+    session=$words[2]
+    if [[ -n "$piledriver_dir" && -d "$piledriver_dir/$session/reproducers" ]]; then
+        local -a bugs
+        bugs=(${piledriver_dir}/${session}/reproducers/*(/:t))
+        _describe -t bugs 'bug' bugs
+    fi
+}
+
+_piledriver_find_dir() {
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/.piledriver" ]]; then
+            echo "$dir/.piledriver"
+            return
+        fi
+        dir=${dir:h}
+    done
+}
+
+_piledriver "$@"

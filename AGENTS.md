@@ -84,10 +84,15 @@ Quick reference for language-specific tooling. These are suggestions, not requir
 
 ## Reproducer Contract
 
-Each reproducer must:
-1. Test ONE specific bug
-2. Use the target repo's test framework (no direct imports)
-3. FAIL on base commit, PASS on fix commit
-4. Be deterministic
+Each reproducer has two files:
+- `scenario.yaml` - Config (base_commit, fix_commit, setup_commands)
+- `reproduce.sh` - Simple test script (exit 0 = pass, exit 1 = fail)
 
-The fix must be committed before running `piledriver test`.
+Piledriver handles git operations. You just write the test and fill in commit SHAs.
+
+Requirements:
+1. Test ONE specific bug
+2. Keep reproduce.sh simple - just the test command
+3. Base commit: test should FAIL (bug present)
+4. Fix commit: test should PASS (bug fixed)
+5. Test must be deterministic

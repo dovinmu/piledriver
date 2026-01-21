@@ -14,7 +14,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PILEDRIVER_DIR = ".piledriver"
+# Directory names (prefer non-dot, but support legacy .piledriver)
+PILEDRIVER_DIR = "piledriver"
+PILEDRIVER_DIR_LEGACY = ".piledriver"
 
 # Phase constants (IDLE removed - sessions start in RECONNAISSANCE or SCOPING)
 PHASES = ["RECONNAISSANCE", "SCOPING", "ASSUMPTIONS", "VERIFICATION", "REPORT"]
@@ -442,103 +444,47 @@ are overkill. Systematic checklist-based review.
 
 BUG_README_TEMPLATE = """# Reproducer: {bug_name}
 
-<!--
-This reproducer validates that:
-1. The bug exists in the original code (tests fail on base commit)
-2. The fix resolves the bug (tests pass on fix commit)
-
-Replace this content with your own documentation.
--->
-
 ## Bug Description
-
-## Base Commit
-<!-- The commit where the bug exists -->
-
-## Fix Commit
-<!-- The commit with the fix applied -->
+<!-- Describe the bug this reproducer demonstrates -->
 
 ## How to Run
 ```bash
-./run.sh
-# Results written to results.json
+piledriver test {session_name} {bug_name}
 ```
 
+## Files
+- `reproduce.sh` - Test script (exit 0 = pass, exit 1 = fail)
+- `scenario.yaml` - Config (commit SHAs, setup commands)
+
 ## Expected Behavior
-- Base commit: At least one test should FAIL
-- Fix commit: All tests should PASS
+- base_commit: reproduce.sh exits 1 (bug present)
+- fix_commit: reproduce.sh exits 0 (bug fixed)
 """
 
-BUG_RUNSH_TEMPLATE = """#!/bin/bash
-set -e
+BUG_SCENARIO_TEMPLATE = """# Reproducer: {bug_name}
+# piledriver handles git operations - just fill in this config.
 
-# === REPRODUCER RULES ===
-# 1. SINGLE TEST: This reproducer should test ONE specific bug
-# 2. COMMIT-FIRST: BASE_COMMIT and FIX_COMMIT must be set BEFORE running
-# 3. NO DIRECT IMPORTS: Test the installed code, not patched copies
-# 4. SAME TEST: The same test must FAIL on base and PASS on fix
-#
-# Success = tests FAIL on BASE_COMMIT, PASS on FIX_COMMIT
+# REQUIRED: Commit where bug EXISTS (reproduce.sh should exit 1)
+base_commit: ""
 
-# === CONFIGURATION ===
-# YOU MUST SET THESE VALUES before running piledriver test:
-REPO_PATH="../../../<target-repo>"  # Path to repo under scrutiny
-BASE_COMMIT="<commit-sha>"          # Commit where bug EXISTS (tests should FAIL)
-FIX_COMMIT="<commit-sha>"           # Commit with fix APPLIED (tests should PASS)
-TEST_CMD="go test -v ./path/to/tests/..."  # Single test or test pattern
+# OPTIONAL: Commit with fix APPLIED (reproduce.sh should exit 0)
+# Leave empty to confirm bug exists without validating fix.
+fix_commit: ""
 
-# === HELPER FUNCTIONS ===
-run_tests() {
-    local commit=$1
-    cd "$REPO_PATH"
-    git checkout -q "$commit"
+# OPTIONAL: Path to target repo (default: current working directory)
+# repo_path: ""
 
-    # Run tests and capture results
-    # Modify this section based on your test framework
-    local output
-    local exit_code=0
-    output=$($TEST_CMD 2>&1) || exit_code=$?
+# OPTIONAL: Commands to run after checkout, before test
+# setup_commands:
+#   - "go mod tidy"
+"""
 
-    # Parse test results (adjust for your framework)
-    local total=$(echo "$output" | grep -c "^--- " || echo "0")
-    local failed=$(echo "$output" | grep -c "^--- FAIL" || echo "0")
-    local passed=$((total - failed))
+BUG_REPRODUCE_TEMPLATE = """#!/bin/bash
+# Reproducer: {bug_name}
+# Exit 0 = pass (bug fixed), Exit 1 = fail (bug present)
 
-    echo "{\\"total\\": $total, \\"passed\\": $passed, \\"failed\\": $failed}"
-    cd - > /dev/null
-    return $exit_code
-}
-
-# === MAIN ===
-echo "Testing base commit: $BASE_COMMIT"
-BASE_RESULT=$(run_tests "$BASE_COMMIT") || true
-
-echo "Testing fix commit: $FIX_COMMIT"
-FIX_RESULT=$(run_tests "$FIX_COMMIT")
-
-# Compute success
-BASE_FAILED=$(echo "$BASE_RESULT" | jq -r '.failed')
-FIX_FAILED=$(echo "$FIX_RESULT" | jq -r '.failed')
-
-if [[ "$BASE_FAILED" -gt 0 && "$FIX_FAILED" -eq 0 ]]; then
-    SUCCESS="true"
-else
-    SUCCESS="false"
-fi
-
-# Write results
-cat > results.json << EOF
-{
-  "base_commit": "$BASE_COMMIT",
-  "fix_commit": "$FIX_COMMIT",
-  "base_result": $BASE_RESULT,
-  "fix_result": $FIX_RESULT,
-  "success": $SUCCESS
-}
-EOF
-
-echo "Results written to results.json"
-echo "Success: $SUCCESS"
+# TODO: Write your test command here
+go test -run TestSpecificCase ./...
 """
 
 
@@ -548,7 +494,7 @@ GUIDANCE = {
     "init": {
         "summary": "Session '{session}' initialized in {phase} phase.",
         "next_steps": [
-            "Edit `.piledriver/{session}/reconnaissance.md` to run automated analysis:",
+            "Edit `piledriver/{session}/reconnaissance.md` to run automated analysis:",
             "  - Race detectors (go test -race, cargo test, etc.)",
             "  - Static analyzers (staticcheck, clippy, ruff)",
             "  - Pattern searches for known bug signatures",
@@ -560,7 +506,7 @@ GUIDANCE = {
     "init:scoping": {
         "summary": "Session '{session}' initialized in SCOPING phase (skipped reconnaissance).",
         "next_steps": [
-            "Edit `.piledriver/{session}/boundary.md` to define:",
+            "Edit `piledriver/{session}/boundary.md` to define:",
             "  - The suspected bug (Suspect section)",
             "  - Components to verify (Inside section)",
             "  - Components to treat as black boxes (Outside section)",
@@ -572,7 +518,7 @@ GUIDANCE = {
     "set-phase:RECONNAISSANCE": {
         "summary": "Entered RECONNAISSANCE phase.",
         "next_steps": [
-            "Complete `.piledriver/{session}/reconnaissance.md`:",
+            "Complete `piledriver/{session}/reconnaissance.md`:",
             "  - Run race detectors and static analyzers",
             "  - Search for known bug patterns (TOCTOU, double-check locking, etc.)",
             "  - Rank suspects by likelihood and severity",
@@ -584,7 +530,7 @@ GUIDANCE = {
     "set-phase:SCOPING": {
         "summary": "Entered SCOPING phase.",
         "next_steps": [
-            "Complete `.piledriver/{session}/boundary.md`:",
+            "Complete `piledriver/{session}/boundary.md`:",
             "  - Document the suspect (what bug are we hunting?)",
             "  - List what's INSIDE (components to verify)",
             "  - List what's OUTSIDE (black boxes with assumptions)",
@@ -597,7 +543,7 @@ GUIDANCE = {
     "set-phase:ASSUMPTIONS": {
         "summary": "Entered ASSUMPTIONS phase.",
         "next_steps": [
-            "Complete `.piledriver/{session}/assumptions.md`:",
+            "Complete `piledriver/{session}/assumptions.md`:",
             "  - For EACH interface point, document what you assume about the outside",
             "  - Source your beliefs ('Code inspection of X shows...')",
             "  - Mark risk level (LOW/MEDIUM/HIGH)",
@@ -627,7 +573,7 @@ GUIDANCE = {
             "  - boundary.md: Does it still reflect what was actually verified?",
             "  - assumptions.md: Were any assumptions validated or invalidated?",
             "  - model.tla: Add comments explaining what the model proves",
-            "Create `.piledriver/{session}/report.md` with:",
+            "Create `piledriver/{session}/report.md` with:",
             "  - Summary of what was investigated",
             "  - Verification results and their interpretation",
             "  - Bug relevance: When would this happen in production?",
@@ -641,14 +587,16 @@ GUIDANCE = {
     "bug": {
         "summary": "Bug reproducer '{bug}' created.",
         "next_steps": [
-            "Edit `.piledriver/{session}/reproducers/{bug}/run.sh`:",
-            "  - Set REPO_PATH to the repository under test",
-            "  - Set BASE_COMMIT to commit where bug EXISTS (tests should FAIL)",
-            "  - Set FIX_COMMIT to commit with fix APPLIED (tests should PASS)",
-            "  - Set TEST_CMD to the test command",
-            "The fix must be COMMITTED before running `piledriver test {session} {bug}`",
+            "1. Edit `reproduce.sh`: Write a simple test command",
+            "   - Exit 0 = test passes (bug fixed)",
+            "   - Exit 1 = test fails (bug present)",
+            "2. Edit `scenario.yaml`: Fill in commit SHAs",
+            "   - base_commit: where bug EXISTS",
+            "   - fix_commit: where bug is FIXED (optional)",
+            "3. Run: `piledriver test {session} {bug}`",
+            "   Piledriver handles git checkout automatically.",
         ],
-        "reminder": "Rules: ONE test per bug, use target repo's test framework, NO direct imports, test must be deterministic."
+        "reminder": "Keep reproduce.sh simple - just the test command. Piledriver handles git operations."
     },
     "check:success": {
         "summary": "TLC completed. No invariant violations found.",
@@ -676,14 +624,14 @@ GUIDANCE = {
     "check:syntax_error": {
         "summary": "SANY found syntax errors in the TLA+ specification.",
         "next_steps": [
-            "Fix syntax errors in `.piledriver/{session}/model.tla`",
+            "Fix syntax errors in `piledriver/{session}/model.tla`",
             "Re-run syntax check: `piledriver check {session} --sany`",
             "Common issues: missing operators, unbalanced parens, invalid identifiers",
         ],
         "reminder": "TLA+ is whitespace-sensitive. Check indentation in multi-line expressions."
     },
     "pr": {
-        "summary": "PR draft generated at `.piledriver/{session}/pr-draft.md`.",
+        "summary": "PR draft generated at `piledriver/{session}/pr-draft.md`.",
         "next_steps": [
             "Review and edit the PR draft",
             "Ensure reproducers pass: `piledriver test {session}`",
@@ -747,11 +695,19 @@ def format_guidance(template_key: str, **kwargs) -> str:
 
 
 def get_piledriver_root() -> Path:
-    """Find the .piledriver directory, searching upward from cwd."""
+    """Find the piledriver directory, searching upward from cwd.
+
+    Supports both 'piledriver/' (preferred) and '.piledriver/' (legacy).
+    """
     cwd = Path.cwd()
     for parent in [cwd] + list(cwd.parents):
+        # Prefer non-dot directory
         if (parent / PILEDRIVER_DIR).exists():
             return parent / PILEDRIVER_DIR
+        # Fall back to legacy .piledriver
+        if (parent / PILEDRIVER_DIR_LEGACY).exists():
+            return parent / PILEDRIVER_DIR_LEGACY
+    # Default to non-dot for new projects
     return cwd / PILEDRIVER_DIR
 
 
@@ -768,6 +724,29 @@ def validate_session_name(name: str) -> tuple:
     return True, ""
 
 
+def add_to_git_exclude(piledriver_dir: Path):
+    """Add piledriver directory to .git/info/exclude if not already present."""
+    git_dir = piledriver_dir.parent / ".git"
+    if not git_dir.exists():
+        return  # Not a git repo
+
+    exclude_file = git_dir / "info" / "exclude"
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+
+    dir_name = piledriver_dir.name
+    exclude_entry = f"{dir_name}/"
+
+    # Check if already excluded
+    if exclude_file.exists():
+        content = exclude_file.read_text()
+        if exclude_entry in content.splitlines():
+            return  # Already excluded
+
+    # Append to exclude file
+    with open(exclude_file, "a") as f:
+        f.write(f"\n# Piledriver session data (local only)\n{exclude_entry}\n")
+
+
 def cmd_init(args):
     """Initialize a new analysis session."""
     session_name = args.session_name
@@ -779,7 +758,11 @@ def cmd_init(args):
         print(f"Error: {error}")
         return 1
 
-    piledriver_dir = Path.cwd() / PILEDRIVER_DIR
+    # Check for existing piledriver dir (prefer existing, create new as non-dot)
+    piledriver_dir = get_piledriver_root()
+    if not piledriver_dir.exists():
+        piledriver_dir = Path.cwd() / PILEDRIVER_DIR
+
     session_dir = piledriver_dir / session_name
 
     if session_dir.exists():
@@ -791,6 +774,9 @@ def cmd_init(args):
 
     # Create directories
     session_dir.mkdir(parents=True)
+
+    # Add to .git/info/exclude (keeps piledriver/ out of version control)
+    add_to_git_exclude(piledriver_dir)
 
     # Create state.json
     state = create_initial_state(session_name, initial_phase)
@@ -852,20 +838,182 @@ def cmd_bug(args):
 
     # Create stub files
     (bug_dir / "README.md").write_text(
-        BUG_README_TEMPLATE.format(bug_name=bug_name)
+        BUG_README_TEMPLATE.format(bug_name=bug_name, session_name=session_name)
     )
-    runsh_path = bug_dir / "run.sh"
-    runsh_path.write_text(BUG_RUNSH_TEMPLATE)
-    runsh_path.chmod(0o755)
+    (bug_dir / "scenario.yaml").write_text(
+        BUG_SCENARIO_TEMPLATE.format(bug_name=bug_name)
+    )
+    reproduce_path = bug_dir / "reproduce.sh"
+    reproduce_path.write_text(BUG_REPRODUCE_TEMPLATE.format(bug_name=bug_name))
+    reproduce_path.chmod(0o755)
 
     print(f"Created bug reproducer '{bug_name}' at {bug_dir}")
     print(f"  - README.md")
-    print(f"  - run.sh (executable)")
+    print(f"  - scenario.yaml (fill in commit SHAs)")
+    print(f"  - reproduce.sh (write your test)")
 
     # Print guidance
     print(format_guidance("bug", session=session_name, bug=bug_name))
 
     return 0
+
+
+# === Reproducer helpers ===
+
+def parse_scenario_yaml(path: Path) -> dict:
+    """Parse a simple scenario.yaml file. Returns dict with config values."""
+    config = {
+        "base_commit": "",
+        "fix_commit": "",
+        "repo_path": "",
+        "setup_commands": [],
+    }
+
+    if not path.exists():
+        return config
+
+    content = path.read_text()
+    current_list_key = None
+
+    for line in content.splitlines():
+        # Skip comments and empty lines
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            current_list_key = None
+            continue
+
+        # Handle list items (for setup_commands)
+        if stripped.startswith("- ") and current_list_key:
+            value = stripped[2:].strip().strip('"').strip("'")
+            config[current_list_key].append(value)
+            continue
+
+        # Handle key: value pairs
+        if ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            if key in config:
+                if key == "setup_commands":
+                    current_list_key = key
+                else:
+                    config[key] = value
+                    current_list_key = None
+
+    return config
+
+
+def git_get_state(repo_path: Path) -> dict:
+    """Get current git state (branch/commit, dirty status)."""
+    try:
+        # Get current commit
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        commit = result.stdout.strip()
+
+        # Get current branch (if any)
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        branch = result.stdout.strip()
+        if branch == "HEAD":
+            branch = None  # Detached HEAD
+
+        # Check for uncommitted changes
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        dirty = bool(result.stdout.strip())
+
+        return {"commit": commit, "branch": branch, "dirty": dirty}
+    except subprocess.CalledProcessError:
+        return None
+
+
+def git_stash_if_dirty(repo_path: Path, state: dict) -> bool:
+    """Stash changes if working directory is dirty. Returns True if stashed."""
+    if not state or not state.get("dirty"):
+        return False
+
+    try:
+        subprocess.run(
+            ["git", "stash", "push", "-m", "piledriver-test-stash"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def git_checkout(repo_path: Path, commit: str) -> bool:
+    """Checkout a specific commit. Returns True on success."""
+    try:
+        subprocess.run(
+            ["git", "checkout", "-q", commit],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"    git checkout failed: {e.stderr.strip()}")
+        return False
+
+
+def git_restore_state(repo_path: Path, state: dict, stashed: bool):
+    """Restore git to original state."""
+    if not state:
+        return
+
+    try:
+        # Checkout original branch or commit
+        target = state.get("branch") or state.get("commit")
+        if target:
+            subprocess.run(
+                ["git", "checkout", "-q", target],
+                cwd=repo_path, capture_output=True, text=True, check=True
+            )
+
+        # Pop stash if we stashed
+        if stashed:
+            subprocess.run(
+                ["git", "stash", "pop"],
+                cwd=repo_path, capture_output=True, text=True, check=True
+            )
+    except subprocess.CalledProcessError:
+        pass  # Best effort restore
+
+
+def run_reproduce_script(bug_dir: Path, repo_path: Path, setup_commands: list) -> tuple:
+    """Run reproduce.sh and return (exit_code, output)."""
+    # Run setup commands first
+    for cmd in setup_commands:
+        try:
+            subprocess.run(
+                cmd, shell=True, cwd=repo_path,
+                capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            return (-1, f"Setup command failed: {cmd}\n{e.stderr}")
+
+    # Run reproduce.sh
+    reproduce_sh = bug_dir / "reproduce.sh"
+    try:
+        result = subprocess.run(
+            ["bash", str(reproduce_sh)],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout per run
+        )
+        return (result.returncode, result.stdout + result.stderr)
+    except subprocess.TimeoutExpired:
+        return (-1, "TIMEOUT: exceeded 5 minutes")
+    except Exception as e:
+        return (-1, str(e))
 
 
 def cmd_test(args):
@@ -900,86 +1048,168 @@ def cmd_test(args):
     results = []
     for bug_dir in sorted(bug_dirs):
         bug = bug_dir.name
-        runsh = bug_dir / "run.sh"
+        scenario_file = bug_dir / "scenario.yaml"
+        reproduce_sh = bug_dir / "reproduce.sh"
         results_file = bug_dir / "results.json"
 
-        if not runsh.exists():
-            print(f"[{bug}] SKIP - no run.sh")
-            results.append((bug, "SKIP", "no run.sh"))
+        # Also support legacy run.sh for backwards compatibility
+        legacy_runsh = bug_dir / "run.sh"
+
+        # Check for required files
+        if not reproduce_sh.exists() and not legacy_runsh.exists():
+            print(f"[{bug}] SKIP - no reproduce.sh")
+            results.append((bug, "SKIP", "no reproduce.sh"))
             continue
 
-        print(f"[{bug}] Running...")
+        # Legacy mode: if run.sh exists but no scenario.yaml, use old behavior
+        if legacy_runsh.exists() and not scenario_file.exists():
+            print(f"[{bug}] Running (legacy mode)...")
+            try:
+                result = subprocess.run(
+                    ["bash", str(legacy_runsh)],
+                    cwd=str(bug_dir),
+                    capture_output=True, text=True, timeout=600
+                )
+            except subprocess.TimeoutExpired:
+                print(f"[{bug}] TIMEOUT")
+                results.append((bug, "TIMEOUT", "exceeded 10 minutes"))
+                continue
+            except Exception as e:
+                print(f"[{bug}] ERROR - {e}")
+                results.append((bug, "ERROR", str(e)))
+                continue
 
-        # Execute run.sh
-        try:
-            result = subprocess.run(
-                ["bash", str(runsh)],
-                cwd=str(bug_dir),
-                capture_output=True,
-                text=True,
-                timeout=600  # 10 minute timeout
-            )
-        except subprocess.TimeoutExpired:
-            print(f"[{bug}] TIMEOUT")
-            results.append((bug, "TIMEOUT", "exceeded 10 minutes"))
-            continue
-        except Exception as e:
-            print(f"[{bug}] ERROR - {e}")
-            results.append((bug, "ERROR", str(e)))
-            continue
-
-        # Read results.json
-        if not results_file.exists():
-            print(f"[{bug}] ERROR - no results.json generated")
-            results.append((bug, "ERROR", "no results.json"))
-            continue
-
-        try:
-            with open(results_file) as f:
-                data = json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"[{bug}] ERROR - invalid results.json: {e}")
-            results.append((bug, "ERROR", f"invalid JSON: {e}"))
-            continue
-
-        # Evaluate results
-        success = data.get("success", False)
-        base_result = data.get("base_result") or {}
-        fix_result = data.get("fix_result")
-        fix_commit = data.get("fix_commit")
-
-        # Handle intermediate state: bug confirmed but no fix commit set
-        if fix_result is None or fix_commit is None:
-            if success == "bug_confirmed":
-                status = "PENDING"
-                detail = "bug confirmed - set FIX_COMMIT in run.sh to validate fix"
-            elif success == "inconclusive":
-                status = "PENDING"
-                detail = "bug not reliably reproduced - adjust test or retry"
+            # Read results.json from legacy script
+            if results_file.exists():
+                try:
+                    with open(results_file) as f:
+                        data = json.load(f)
+                    success = data.get("success", False)
+                    if success is True:
+                        results.append((bug, "PASS", "legacy mode"))
+                    else:
+                        results.append((bug, "FAIL", "legacy mode"))
+                    print(f"[{bug}] {'PASS' if success else 'FAIL'} (legacy mode)")
+                except:
+                    results.append((bug, "ERROR", "invalid results.json"))
+                    print(f"[{bug}] ERROR (invalid results.json)")
             else:
-                status = "ERROR"
-                detail = f"fix_result is null but success={success!r} (expected 'bug_confirmed')"
+                results.append((bug, "ERROR", "no results.json"))
+                print(f"[{bug}] ERROR (no results.json)")
+            continue
+
+        # New mode: scenario.yaml + reproduce.sh
+        config = parse_scenario_yaml(scenario_file)
+        base_commit = config.get("base_commit", "").strip()
+        fix_commit = config.get("fix_commit", "").strip()
+        repo_path_str = config.get("repo_path", "").strip()
+        setup_commands = config.get("setup_commands", [])
+
+        if not base_commit:
+            print(f"[{bug}] SKIP - base_commit not set in scenario.yaml")
+            results.append((bug, "SKIP", "base_commit not set"))
+            continue
+
+        # Determine repo path
+        if repo_path_str:
+            repo_path = Path(repo_path_str)
+            if not repo_path.is_absolute():
+                repo_path = bug_dir / repo_path_str
+        else:
+            # Default: search upward from piledriver dir for .git
+            repo_path = piledriver_dir.parent
+            while repo_path != repo_path.parent:
+                if (repo_path / ".git").exists():
+                    break
+                repo_path = repo_path.parent
+
+        if not (repo_path / ".git").exists():
+            print(f"[{bug}] ERROR - no git repo found at {repo_path}")
+            results.append((bug, "ERROR", "no git repo found"))
+            continue
+
+        print(f"[{bug}] Testing in {repo_path}...")
+
+        # Save git state
+        original_state = git_get_state(repo_path)
+        if not original_state:
+            print(f"[{bug}] ERROR - could not get git state")
+            results.append((bug, "ERROR", "git state error"))
+            continue
+
+        stashed = git_stash_if_dirty(repo_path, original_state)
+        if stashed:
+            print(f"    Stashed uncommitted changes")
+
+        try:
+            # Test on base commit (should FAIL - bug present)
+            print(f"    Checking out base: {base_commit[:8]}...")
+            if not git_checkout(repo_path, base_commit):
+                results.append((bug, "ERROR", "git checkout base failed"))
+                continue
+
+            base_exit, base_output = run_reproduce_script(bug_dir, repo_path, setup_commands)
+            base_failed = base_exit != 0
+            print(f"    Base result: {'FAIL' if base_failed else 'PASS'} (exit {base_exit})")
+
+            # Test on fix commit if specified
+            if fix_commit:
+                print(f"    Checking out fix: {fix_commit[:8]}...")
+                if not git_checkout(repo_path, fix_commit):
+                    results.append((bug, "ERROR", "git checkout fix failed"))
+                    continue
+
+                fix_exit, fix_output = run_reproduce_script(bug_dir, repo_path, setup_commands)
+                fix_passed = fix_exit == 0
+                print(f"    Fix result: {'PASS' if fix_passed else 'FAIL'} (exit {fix_exit})")
+
+                # Evaluate: base should fail, fix should pass
+                if base_failed and fix_passed:
+                    status = "PASS"
+                    detail = f"base fails (exit {base_exit}), fix passes"
+                elif not base_failed:
+                    status = "FAIL"
+                    detail = f"base should fail but passed (exit {base_exit})"
+                else:
+                    status = "FAIL"
+                    detail = f"fix should pass but failed (exit {fix_exit})"
+
+                # Write results.json
+                result_data = {
+                    "base_commit": base_commit,
+                    "fix_commit": fix_commit,
+                    "base_exit": base_exit,
+                    "fix_exit": fix_exit,
+                    "success": base_failed and fix_passed,
+                }
+            else:
+                # No fix commit - just confirm bug exists
+                if base_failed:
+                    status = "CONFIRMED"
+                    detail = f"bug confirmed (exit {base_exit})"
+                else:
+                    status = "FAIL"
+                    detail = f"test passed on base - bug not reproduced (exit {base_exit})"
+
+                result_data = {
+                    "base_commit": base_commit,
+                    "fix_commit": None,
+                    "base_exit": base_exit,
+                    "fix_exit": None,
+                    "success": "bug_confirmed" if base_failed else False,
+                }
+
+            # Write results.json
+            with open(results_file, "w") as f:
+                json.dump(result_data, f, indent=2)
+
             print(f"[{bug}] {status} ({detail})")
             results.append((bug, status, detail))
-            continue
 
-        base_failed = base_result.get("failed", 0)
-        fix_failed = fix_result.get("failed", 0)
-
-        if success is True:
-            status = "PASS"
-            detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
-        else:
-            status = "FAIL"
-            if base_failed == 0:
-                detail = f"base had 0 failures (expected >0)"
-            elif fix_failed > 0:
-                detail = f"fix still has {fix_failed} failures"
-            else:
-                detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
-
-        print(f"[{bug}] {status} ({detail})")
-        results.append((bug, status, detail))
+        finally:
+            # Always restore git state
+            print(f"    Restoring git state...")
+            git_restore_state(repo_path, original_state, stashed)
 
     # Print summary
     print()
@@ -1012,7 +1242,7 @@ def cmd_status(args):
     piledriver_dir = get_piledriver_root()
 
     if not piledriver_dir.exists():
-        print("No .piledriver directory found.")
+        print("No piledriver directory found.")
         print("Run 'piledriver init <session_name>' to start.")
         return 1
 
