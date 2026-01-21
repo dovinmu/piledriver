@@ -11,11 +11,12 @@ const PiledriverDir = ".piledriver"
 
 // SessionFiles tracks which standard files exist in a session
 type SessionFiles struct {
-	Boundary    bool
-	Assumptions bool
-	ModelTLA    bool
-	ModelCfg    bool
-	Probe       bool
+	Reconnaissance bool
+	Boundary       bool
+	Assumptions    bool
+	ModelTLA       bool
+	ModelCfg       bool
+	Probe          bool
 }
 
 // ReproducerStatus represents the status of a single reproducer
@@ -130,11 +131,12 @@ func GetSessionFiles(sessionDir string) SessionFiles {
 	}
 
 	return SessionFiles{
-		Boundary:    exists("boundary.md"),
-		Assumptions: exists("assumptions.md"),
-		ModelTLA:    exists("model.tla"),
-		ModelCfg:    exists("model.cfg"),
-		Probe:       exists("probe.md"),
+		Reconnaissance: exists("reconnaissance.md"),
+		Boundary:       exists("boundary.md"),
+		Assumptions:    exists("assumptions.md"),
+		ModelTLA:       exists("model.tla"),
+		ModelCfg:       exists("model.cfg"),
+		Probe:          exists("probe.md"),
 	}
 }
 
