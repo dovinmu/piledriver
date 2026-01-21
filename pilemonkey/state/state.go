@@ -11,22 +11,33 @@ import (
 type Phase string
 
 const (
-	PhaseIdle         Phase = "IDLE"
-	PhaseScoping      Phase = "SCOPING"
-	PhaseAssumptions  Phase = "ASSUMPTIONS"
-	PhaseVerification Phase = "VERIFICATION"
-	PhaseReport       Phase = "REPORT"
+	PhaseReconnaissance Phase = "RECONNAISSANCE"
+	PhaseScoping        Phase = "SCOPING"
+	PhaseAssumptions    Phase = "ASSUMPTIONS"
+	PhaseVerification   Phase = "VERIFICATION"
+	PhaseReport         Phase = "REPORT"
+
+	// PhaseIdle is deprecated but kept for backwards compatibility with old state files
+	PhaseIdle Phase = "IDLE"
 )
 
-// AllPhases returns all phases in order
+// AllPhases returns all phases in order (excluding deprecated IDLE)
 func AllPhases() []Phase {
 	return []Phase{
-		PhaseIdle,
+		PhaseReconnaissance,
 		PhaseScoping,
 		PhaseAssumptions,
 		PhaseVerification,
 		PhaseReport,
 	}
+}
+
+// NormalizePhase converts legacy IDLE phase to RECONNAISSANCE
+func NormalizePhase(p Phase) Phase {
+	if p == PhaseIdle {
+		return PhaseReconnaissance
+	}
+	return p
 }
 
 // PhaseIndex returns the index of a phase (0-4)
@@ -62,6 +73,7 @@ type SessionState struct {
 	PhaseHistory []PhaseEntry     `json:"phase_history"`
 	PhaseNotes   map[Phase]string `json:"phase_notes"`
 	TLCResults   []TLCResult      `json:"tlc_results,omitempty"`
+	Summary      string           `json:"summary,omitempty"` // High-level task description
 	Created      time.Time        `json:"created"`
 	LastModified time.Time        `json:"last_modified"`
 }
@@ -71,9 +83,9 @@ func NewSessionState(sessionName string) *SessionState {
 	now := time.Now()
 	return &SessionState{
 		Session:      sessionName,
-		CurrentPhase: PhaseIdle,
+		CurrentPhase: PhaseReconnaissance,
 		PhaseHistory: []PhaseEntry{
-			{Phase: PhaseIdle, Entered: now},
+			{Phase: PhaseReconnaissance, Entered: now},
 		},
 		PhaseNotes:   make(map[Phase]string),
 		Created:      now,

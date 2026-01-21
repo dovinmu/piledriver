@@ -5,17 +5,30 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
-const PiledriverDir = ".piledriver"
+// Directory names (prefer non-dot, support legacy)
+const PiledriverDir = "piledriver"
+const PiledriverDirLegacy = ".piledriver"
 
-// SessionFiles tracks which standard files exist in a session
+// FileStatus represents the state of a session file
+type FileStatus int
+
+const (
+	FileMissing  FileStatus = iota // File doesn't exist
+	FileTemplate                   // File exists but only has template content
+	FileFilled                     // File exists with real content
+)
+
+// SessionFiles tracks which standard files exist and their status
 type SessionFiles struct {
-	Boundary    bool
-	Assumptions bool
-	ModelTLA    bool
-	ModelCfg    bool
-	Probe       bool
+	Reconnaissance FileStatus
+	Boundary       FileStatus
+	Assumptions    FileStatus
+	ModelTLA       FileStatus
+	ModelCfg       FileStatus
+	Probe          FileStatus
 }
 
 // ReproducerStatus represents the status of a single reproducer
@@ -37,7 +50,8 @@ type SessionInfo struct {
 	State       *SessionState
 }
 
-// FindPiledriverDir searches upward from dir for .piledriver directory
+// FindPiledriverDir searches upward from dir for piledriver directory
+// Supports both 'piledriver/' (preferred) and '.piledriver/' (legacy)
 func FindPiledriverDir(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -45,9 +59,16 @@ func FindPiledriverDir(startDir string) (string, error) {
 	}
 
 	for {
+		// Prefer non-dot directory
 		pdDir := filepath.Join(dir, PiledriverDir)
 		if info, err := os.Stat(pdDir); err == nil && info.IsDir() {
 			return pdDir, nil
+		}
+
+		// Fall back to legacy .piledriver
+		pdDirLegacy := filepath.Join(dir, PiledriverDirLegacy)
+		if info, err := os.Stat(pdDirLegacy); err == nil && info.IsDir() {
+			return pdDirLegacy, nil
 		}
 
 		parent := filepath.Dir(dir)
@@ -122,19 +143,67 @@ func GetSessionDir(piledriverDir, sessionName string) string {
 	return filepath.Join(piledriverDir, sessionName)
 }
 
-// GetSessionFiles checks which standard files exist in a session
-func GetSessionFiles(sessionDir string) SessionFiles {
-	exists := func(name string) bool {
-		_, err := os.Stat(filepath.Join(sessionDir, name))
-		return err == nil
+// isTemplateContent checks if file content appears to be just a template
+// by looking for unfilled placeholder markers
+func isTemplateContent(content string) bool {
+	// Template markers that indicate unfilled content
+	templateMarkers := []string{
+		"<!-- TODO",
+		"<!-- Describe",
+		"<!-- Document",
+		"<!-- Replace",
+		"# TODO:",
+		"TODO: Write",
+		"TODO: Replace",
+		"VARIABLES placeholder",  // TLA+ template marker
+		"placeholder = 0",        // TLA+ template marker
 	}
 
+	for _, marker := range templateMarkers {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+
+	// Also check if content is very short (likely just headers)
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	nonEmptyLines := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip empty lines, comments, and headers
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "<!--") && !strings.HasPrefix(trimmed, "-->") {
+			nonEmptyLines++
+		}
+	}
+
+	// If very few non-header lines, likely still template
+	return nonEmptyLines < 3
+}
+
+// getFileStatus checks if a file exists and whether it has real content
+func getFileStatus(sessionDir, name string) FileStatus {
+	path := filepath.Join(sessionDir, name)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return FileMissing
+	}
+
+	if isTemplateContent(string(content)) {
+		return FileTemplate
+	}
+
+	return FileFilled
+}
+
+// GetSessionFiles checks which standard files exist in a session and their status
+func GetSessionFiles(sessionDir string) SessionFiles {
 	return SessionFiles{
-		Boundary:    exists("boundary.md"),
-		Assumptions: exists("assumptions.md"),
-		ModelTLA:    exists("model.tla"),
-		ModelCfg:    exists("model.cfg"),
-		Probe:       exists("probe.md"),
+		Reconnaissance: getFileStatus(sessionDir, "reconnaissance.md"),
+		Boundary:       getFileStatus(sessionDir, "boundary.md"),
+		Assumptions:    getFileStatus(sessionDir, "assumptions.md"),
+		ModelTLA:       getFileStatus(sessionDir, "model.tla"),
+		ModelCfg:       getFileStatus(sessionDir, "model.cfg"),
+		Probe:          getFileStatus(sessionDir, "probe.md"),
 	}
 }
 

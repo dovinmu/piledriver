@@ -1,180 +1,98 @@
-# Piledriver: TLA+ Bug Hunter
+# Piledriver: Bug Hunter
 
-A systematic bug hunting workflow using formal methods. You are an agent assisting a human in finding bugs in existing code through "middle-out modeling."
-
-## CLI Commands
-
-Piledriver provides a CLI for scaffolding and validation:
-
-```bash
-piledriver init <session>              # Start a new analysis session
-piledriver set-phase <session> <phase> # Transition to a new phase
-piledriver bug <session> <bug>         # Create a bug reproducer scaffold
-piledriver test <session> [bug]        # Run before/after test validation
-piledriver check <session> [--sany]    # Run TLC model checker
-piledriver pr <session>                # Generate PR draft from report
-piledriver status [session]            # Show current state
-```
-
-Each command outputs guidance on what to do next. Use `piledriver set-phase` to transition between phases (replaces `/pd.lock`).
+Systematic bug hunting using formal methods and verification techniques.
 
 ## Philosophy
 
-**Middle-out modeling**: Start with a suspected bug, collaboratively define a boundary around it, formally model what's inside the boundary, and treat what's outside as explicit assumptions that we test.
+**Middle-out modeling**: Start with a suspected bug, define a boundary around it, formally verify what's inside, and treat what's outside as explicit assumptions.
 
 This is NOT "spec then implement." This is "reverse engineer, verify, probe."
 
-## Modes and Transitions
-
-Piledriver is a **state machine**. You can move back to earlier modes if the boundary turns out to be wrong.
+## Workflow
 
 ```
-IDLE → SCOPING → ASSUMPTIONS → VERIFICATION → REPORT → IDLE
-         ↑_________|rescope|_________|
+(init) → RECONNAISSANCE ←→ SCOPING ←→ ASSUMPTIONS ←→ VERIFICATION → REPORT
+              ↓ (skip)        ↑
+              └───────────────┘
 ```
 
-| Mode | Description | Human Role | Advance Command |
-|------|-------------|------------|-----------------|
-| **IDLE** | No active hunt | - | `piledriver set-phase <session> SCOPING` |
-| **SCOPING** | Define what's in/out of the model | Active collaboration | `piledriver set-phase <session> ASSUMPTIONS` |
-| **ASSUMPTIONS** | Document what we assume about "outside" | Active collaboration | `piledriver set-phase <session> VERIFICATION` |
-| **VERIFICATION** | Formalize + model check + probe | Can interject | `piledriver set-phase <session> REPORT` |
-| **REPORT** | Synthesize findings | Review | `piledriver set-phase <session> IDLE` |
+| Phase | Goal |
+|-------|------|
+| **RECONNAISSANCE** | Automated scanning to identify suspects (optional) |
+| **SCOPING** | Define what's inside vs outside the verification boundary |
+| **ASSUMPTIONS** | Document assumptions about components outside the boundary |
+| **VERIFICATION** | Verify using appropriate technique (TLA+, property testing, fuzzing, etc.) |
+| **REPORT** | Synthesize findings, create reproducers |
 
-### Phase Transitions
+Run `piledriver status` for current state. Run `piledriver set-phase <session> <phase>` to transition—the CLI will print detailed guidance for each phase.
 
-Use `piledriver set-phase <session> <phase>` to transition between phases. The CLI validates that required artifacts are filled before advancing:
+## Critical Rules
 
-- **SCOPING → ASSUMPTIONS**: Requires `boundary.md` to have content
-- **ASSUMPTIONS → VERIFICATION**: Requires `assumptions.md` to have content
-- **VERIFICATION → REPORT**: Requires `model.tla` to have content
-- **Rescope**: Use `piledriver set-phase <session> SCOPING` to go back (always allowed)
+1. **Human gates**: Get explicit human approval before advancing past SCOPING or ASSUMPTIONS
+2. **Reproducers are truth**: A verification result means nothing until confirmed with a real test
+3. **Move flexibly**: Go back to any earlier phase if needed, but announce why
+4. **Explicit boundaries**: Every component is IN or OUT, never implicit
 
-Use `--force` to override validation (not recommended).
+## Commands
 
-### Critical Rule
-
-**You cannot advance past SCOPING or ASSUMPTIONS without explicit human approval.** Before running `piledriver set-phase`, confirm with the human that the current phase is complete. This prevents modeling the wrong thing.
-
----
-
-## Hunt Directory Structure
-
-Each hunt session creates artifacts in `.piledriver/<session-name>/`:
-
-```
-.piledriver/
-└── <session-name>/
-    ├── boundary.md         # What's in/out of the model
-    ├── assumptions.md      # What we assume about outside
-    ├── model.tla           # TLA+ specification
-    ├── model.cfg           # TLC configuration (created during verification)
-    ├── probe.md            # Real-world probing plan
-    ├── _tlc_out/           # TLC output (auto-created, gitignored)
-    │   ├── *.bin           # State files
-    │   └── ...             # Other TLC artifacts
-    └── reproducers/        # Bug reproducers for this session
-        └── <bug-name>/
-            ├── README.md   # Bug documentation
-            ├── run.sh      # Test runner script
-            └── results.json # Test results (generated by run.sh)
-```
-
-The `_tlc_out/` directory is created automatically by the `tlc` wrapper and contains all TLC-generated files (state dumps, traces, etc.).
-
-**To start a hunt session:**
 ```bash
-piledriver init <session-name>
+piledriver init <session>              # Start session (RECONNAISSANCE)
+piledriver init <session> --skip-recon # Start session (SCOPING)
+piledriver set-phase <session> <phase> # Transition phases
+piledriver technique <session> [type]  # View/set verification technique
+piledriver check <session> [--sany]    # Run TLC (if using TLA+)
+piledriver bug <session> <bug>         # Create reproducer scaffold
+piledriver test <session> [bug]        # Run reproducer validation
+piledriver pr <session>                # Generate PR draft
+piledriver status [session]            # Show state + guidance
 ```
 
-**To create a bug reproducer:**
-```bash
-piledriver bug <session-name> <bug-name>
-```
+Session names must be lowercase.
 
----
+## Verification Techniques
 
-## Phase Descriptions
+| Technique | Best For |
+|-----------|----------|
+| **TLA+** | Concurrent/distributed systems, state machines, protocol bugs |
+| **Property testing** | Data transformation, pure functions, invariants |
+| **Fuzzing** | Input validation, parsing, crash bugs |
+| **Differential testing** | Comparing implementations |
+| **Manual review** | Simple logic bugs |
 
-### SCOPING
-**Goal**: Define what gets formally modeled vs what becomes assumptions.
+Set with `piledriver technique <session> <type>`.
 
-Read and fill out `boundary.md`. Define what's INSIDE (modeled in TLA+), OUTSIDE (black boxes with assumptions), and INTERFACE (boundary crossings).
+## Suggested Tools
 
-**Guidelines**: Start small (easier to expand than contract). Every component is either IN or OUT, never ambiguous. Document what you're NOT checking and why.
+Quick reference for language-specific tooling. These are suggestions, not requirements.
 
-### ASSUMPTIONS
-**Goal**: For each interface point, document what we assume about the outside.
+### Go
+- Race detection: `go test -race ./...`
+- Static analysis: `staticcheck`, `go vet`, `golangci-lint`
+- Property testing: `rapid`
+- Fuzzing: `go test -fuzz=FuzzName`
 
-Read and fill out `assumptions.md`. For each interface, document the assumption, source, risk level, and verification idea.
+### Python
+- Static analysis: `ruff`, `mypy`
+- Property testing: `hypothesis`
+- Fuzzing: `atheris`
 
-**Guidelines**: Every interface needs assumptions. Source your beliefs ("Code inspection of X"). Flag risky assumptions as HIGH. Think adversarially.
+### Rust
+- Race detection: Built into `cargo test` with `--release`
+- Static analysis: `clippy`
+- Property testing: `proptest`, `quickcheck`
+- Fuzzing: `cargo-fuzz`
 
-### VERIFICATION
-**Goal**: Formally model the inside, run TLC, probe boundaries.
+## Reproducer Contract
 
-Read `model.tla` for the template structure. Write the spec, create `model.cfg`, then run:
-```bash
-piledriver check <session-name>           # Full model check
-piledriver check <session-name> --sany    # Syntax check only
-```
+Each reproducer has two files:
+- `scenario.yaml` - Config (base_commit, fix_commit, setup_commands)
+- `reproduce.sh` - Simple test script (exit 0 = pass, exit 1 = fail)
 
-If counterexample found, study the trace - may need to rescope. If no issues, consider expanding boundary.
+Piledriver handles git operations. You just write the test and fill in commit SHAs.
 
-### REPORT
-**Goal**: Synthesize what was found.
-
-Create `report.md` with summary, findings (from TLA+ and assumption analysis), and recommendations.
-
-Generate PR draft with: `piledriver pr <session-name>`
-
-### REAL-WORLD PROBING
-**Goal**: Confirm findings in the actual codebase.
-
-Create reproducers with `piledriver bug <session> <bug-name>`, run with `piledriver test`.
-
-Be transparent about what we know vs don't know. If findings are disproven, rescope with `piledriver set-phase <session> SCOPING`.
-
----
-
-## Reproducer Best Practices
-
-When creating bug reproducers, follow these rules:
-
-### 1. Single Test Rule
-Each reproducer should contain ONE test that tests ONE specific bug. Do not combine multiple bugs or create sprawling test suites.
-
-### 2. Commit-First Workflow
-Before writing ANY test code:
-- Identify the exact commit where the bug exists (BASE_COMMIT)
-- Identify the exact commit with the fix (FIX_COMMIT)
-- The fix must be **committed** before running `piledriver test`
-
-### 3. No Direct Imports
-Tests should use the target repo's existing test framework. Do not:
-- Import internal packages directly into the reproducer
-- Copy source files into the reproducer
-- Create mock implementations of core types
-- Patch or monkey-patch the code under test
-
-### 4. Use run.sh
-Always use the `run.sh` scaffold. Do not create separate before/after test files - the SAME test must fail on BASE_COMMIT and pass on FIX_COMMIT.
-
-### 5. Minimal Reproduction
-The test should be the SMALLEST code that demonstrates the bug. Remove anything not strictly necessary.
-
-### 6. Deterministic
-The test must produce consistent results. Avoid:
-- Random values without fixed seeds
-- Timing-dependent assertions
-- External service dependencies
-
----
-
-## Workflow Rules Summary
-
-1. **Human gates**: Get human approval before advancing past SCOPING or ASSUMPTIONS
-2. **Explicit boundaries**: Everything is IN or OUT, never implicit
-3. **Test your assumptions**: Assumptions are hypotheses, not facts
-4. **Rescope freely**: If the boundary was wrong, `piledriver set-phase <session> SCOPING`
-5. **Document everything**: Future you (or another agent) needs to understand
+Requirements:
+1. Test ONE specific bug
+2. Keep reproduce.sh simple - just the test command
+3. Base commit: test should FAIL (bug present)
+4. Fix commit: test should PASS (bug fixed)
+5. Test must be deterministic

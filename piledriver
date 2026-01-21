@@ -14,10 +14,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PILEDRIVER_DIR = ".piledriver"
+# Directory names (prefer non-dot, but support legacy .piledriver)
+PILEDRIVER_DIR = "piledriver"
+PILEDRIVER_DIR_LEGACY = ".piledriver"
 
-# Phase constants
-PHASES = ["IDLE", "SCOPING", "ASSUMPTIONS", "VERIFICATION", "REPORT"]
+# Phase constants (IDLE removed - sessions start in RECONNAISSANCE or SCOPING)
+PHASES = ["RECONNAISSANCE", "SCOPING", "ASSUMPTIONS", "VERIFICATION", "REPORT"]
 
 
 # === State file management ===
@@ -56,16 +58,18 @@ def write_state(session_dir: Path, state: dict) -> None:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def create_initial_state(session_name: str) -> dict:
+def create_initial_state(session_name: str, initial_phase: str = "RECONNAISSANCE") -> dict:
     """Create a new state dictionary for a session."""
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     return {
         "session": session_name,
-        "current_phase": "IDLE",
+        "current_phase": initial_phase,
         "phase_history": [
-            {"phase": "IDLE", "entered": now}
+            {"phase": initial_phase, "entered": now}
         ],
         "phase_notes": {},
+        "verification_technique": None,  # Set during VERIFICATION phase
+        "technique_reasoning": None,
         "created": now,
         "last_modified": now
     }
@@ -119,20 +123,42 @@ def validate_phase_transition(session_dir: Path, current_phase: str, new_phase: 
     """
     Validate a phase transition.
     Returns (allowed: bool, reason: str).
+
+    Phase transitions are flexible:
+    - Forward: Must satisfy file requirements
+    - Backward: Always allowed (model may need to revisit earlier phases)
+    - Skip from RECONNAISSANCE to SCOPING: Allowed (recon is optional)
     """
-    # Rescope to SCOPING is always allowed
-    if new_phase == "SCOPING":
-        return True, "Rescoping is always allowed"
+    if new_phase not in PHASES:
+        return False, f"Invalid phase: {new_phase}"
 
-    # Closing from REPORT is always allowed
-    if new_phase == "IDLE" and current_phase == "REPORT":
-        return True, "Closing hunt from REPORT"
+    # Handle legacy IDLE phase (for backwards compatibility)
+    if current_phase == "IDLE":
+        current_phase = "RECONNAISSANCE"
 
-    # Starting a hunt from IDLE
-    if current_phase == "IDLE" and new_phase == "SCOPING":
-        return True, "Starting hunt"
+    try:
+        current_idx = PHASES.index(current_phase)
+        new_idx = PHASES.index(new_phase)
+    except ValueError:
+        return False, f"Invalid phase: {current_phase} or {new_phase}"
+
+    # Backward transitions are always allowed (model may need to revisit)
+    if new_idx < current_idx:
+        return True, f"Going back to {new_phase} (revisiting earlier phase)"
+
+    # Same phase
+    if new_idx == current_idx:
+        return True, f"Already in {new_phase}"
+
+    # Skip from RECONNAISSANCE to SCOPING is allowed (recon is optional)
+    if current_phase == "RECONNAISSANCE" and new_phase == "SCOPING":
+        return True, "Skipping reconnaissance (optional phase)"
 
     # Forward transitions with requirements
+    if current_phase == "RECONNAISSANCE" and new_phase == "ASSUMPTIONS":
+        # Must go through SCOPING first
+        return False, "Must complete SCOPING before ASSUMPTIONS"
+
     if current_phase == "SCOPING" and new_phase == "ASSUMPTIONS":
         if is_file_filled(session_dir / "boundary.md"):
             return True, "boundary.md has content"
@@ -144,25 +170,22 @@ def validate_phase_transition(session_dir: Path, current_phase: str, new_phase: 
         return False, "assumptions.md must be filled before advancing"
 
     if current_phase == "VERIFICATION" and new_phase == "REPORT":
-        if is_file_filled(session_dir / "model.tla", "\\*"):
-            return True, "model.tla has content"
-        return False, "model.tla must be filled before advancing"
+        # Check for any verification artifact (TLA+, properties, fuzz plan, etc.)
+        verification_files = [
+            session_dir / "model.tla",
+            session_dir / "properties.md",
+            session_dir / "fuzz_plan.md",
+            session_dir / "diff_test.md",
+            session_dir / "review_checklist.md",
+        ]
+        for vf in verification_files:
+            if vf.exists() and is_file_filled(vf, "\\*" if vf.suffix == ".tla" else "<!--"):
+                return True, f"{vf.name} has content"
+        return False, "A verification artifact must be filled before advancing (model.tla, properties.md, etc.)"
 
-    # Check phase order
-    if new_phase not in PHASES:
-        return False, f"Invalid phase: {new_phase}"
-
-    try:
-        current_idx = PHASES.index(current_phase)
-        new_idx = PHASES.index(new_phase)
-    except ValueError:
-        return False, f"Invalid phase: {current_phase} or {new_phase}"
-
+    # Cannot skip phases (except RECON -> SCOPING)
     if new_idx > current_idx + 1:
         return False, f"Cannot skip phases. Current: {current_phase}, requested: {new_phase}"
-
-    if new_idx < current_idx and new_phase != "SCOPING":
-        return False, f"Can only go back to SCOPING (rescope), not {new_phase}"
 
     return False, f"Invalid transition from {current_phase} to {new_phase}"
 
@@ -173,11 +196,13 @@ BOUNDARY_TEMPLATE = """# Boundary Definition
 
 <!--
 This file defines what is INSIDE the formal model vs OUTSIDE (assumptions).
-Fill this out during SCOPING mode. Requires /pd.lock to finalize.
+Fill this out during SCOPING phase.
 
-- INSIDE: Components being formally modeled in TLA+
+- INSIDE: Components being formally verified
 - OUTSIDE: Components treated as black boxes with assumptions
 - INTERFACE: What crosses the boundary
+
+When complete, get human approval then: piledriver set-phase {session_name} ASSUMPTIONS
 -->
 
 ## Session
@@ -202,7 +227,9 @@ ASSUMPTIONS_TEMPLATE = """# Boundary Assumptions
 
 <!--
 For each interface point in boundary.md, document what we assume about the outside.
-Fill this out during ASSUMPTIONS mode. Requires /pd.lock to finalize.
+Fill this out during ASSUMPTIONS phase.
+
+When complete, get human approval then: piledriver set-phase {session_name} VERIFICATION
 -->
 
 ## A1:
@@ -255,105 +282,209 @@ What assumptions need verification?
 ## Expected Outcomes
 """
 
-BUG_README_TEMPLATE = """# Reproducer: {bug_name}
+RECONNAISSANCE_TEMPLATE = """# Reconnaissance Report
 
 <!--
-This reproducer validates that:
-1. The bug exists in the original code (tests fail on base commit)
-2. The fix resolves the bug (tests pass on fix commit)
+RECONNAISSANCE phase: Cast a wide net before deep-diving.
+Run automated tools and pattern searches to identify suspects.
+This phase is OPTIONAL - skip to SCOPING if you already know what to investigate.
 
-Replace this content with your own documentation.
+Commands to consider (language-dependent):
+- Race detector: go test -race ./..., cargo test (Rust has built-in)
+- Static analyzers: go vet, staticcheck, clippy, pylint, eslint
+- Pattern grep: Search for known bug patterns (TOCTOU, double-check locking, etc.)
 -->
 
+## Session
+{session_name}
+
+## Automated Analysis
+<!-- Output from race detectors, static analyzers, linters -->
+
+### Race Detection
+<!-- go test -race ./... output, or equivalent -->
+
+### Static Analysis
+<!-- go vet, staticcheck, clippy, etc. -->
+
+### Linter Warnings
+<!-- Any relevant warnings from linters -->
+
+## Pattern Matches
+<!-- Known bug patterns found via grep/search -->
+
+| Pattern | Files Matched | Example |
+|---------|---------------|---------|
+|         |               |         |
+
+## Suspect Ranking
+<!-- Rank suspects by likelihood and severity -->
+
+| Rank | Location | Reason | Confidence |
+|------|----------|--------|------------|
+| 1    |          |        |            |
+| 2    |          |        |            |
+| 3    |          |        |            |
+
+## Recommended Scope
+<!-- Suggestion for what to include in SCOPING boundary -->
+"""
+
+# Verification technique templates
+PROPERTIES_TEMPLATE = """# Property Testing Plan
+
+<!--
+VERIFICATION via property testing: Define properties that should hold,
+then test them with randomized inputs.
+-->
+
+## Properties to Test
+
+### Property 1:
+- **Description**:
+- **Input domain**:
+- **Expected invariant**:
+
+## Test Framework
+<!-- e.g., Hypothesis (Python), QuickCheck (Haskell), gopter (Go) -->
+
+## Results
+<!-- Document property test results here -->
+"""
+
+FUZZ_PLAN_TEMPLATE = """# Fuzzing Plan
+
+<!--
+VERIFICATION via fuzzing: Generate random/malformed inputs to find crashes,
+hangs, or unexpected behavior.
+-->
+
+## Target Functions
+<!-- Functions to fuzz -->
+
+| Function | Input Type | Seed Corpus |
+|----------|------------|-------------|
+|          |            |             |
+
+## Fuzzer Setup
+<!-- e.g., go-fuzz, AFL, libFuzzer -->
+
+## Coverage Goals
+<!-- What code paths are we trying to exercise? -->
+
+## Results
+<!-- Document fuzzing results here -->
+"""
+
+DIFF_TEST_TEMPLATE = """# Differential Testing Plan
+
+<!--
+VERIFICATION via differential testing: Compare behavior between
+two implementations (e.g., old vs new, reference vs optimized).
+-->
+
+## Implementations to Compare
+
+| Implementation A | Implementation B | Purpose |
+|------------------|------------------|---------|
+|                  |                  |         |
+
+## Test Inputs
+<!-- How inputs will be generated -->
+
+## Comparison Method
+<!-- How outputs will be compared -->
+
+## Results
+<!-- Document differential testing results here -->
+"""
+
+REVIEW_CHECKLIST_TEMPLATE = """# Code Review Checklist
+
+<!--
+VERIFICATION via manual review: For simple logic bugs where formal methods
+are overkill. Systematic checklist-based review.
+-->
+
+## Bug Hypothesis
+<!-- What bug are we looking for? -->
+
+## Files to Review
+<!-- List files and functions to check -->
+
+| File | Function | Status | Notes |
+|------|----------|--------|-------|
+|      |          | [ ]    |       |
+
+## Checklist
+
+### Logic Errors
+- [ ] Off-by-one errors
+- [ ] Incorrect conditionals
+- [ ] Missing null/nil checks
+- [ ] Integer overflow/underflow
+
+### State Management
+- [ ] Uninitialized variables
+- [ ] Stale state
+- [ ] Missing state updates
+
+### Error Handling
+- [ ] Unchecked errors
+- [ ] Resource leaks on error paths
+- [ ] Incorrect error propagation
+
+### Custom Checks
+<!-- Add bug-specific checks -->
+- [ ]
+
+## Findings
+<!-- Document review findings here -->
+"""
+
+BUG_README_TEMPLATE = """# Reproducer: {bug_name}
+
 ## Bug Description
-
-## Base Commit
-<!-- The commit where the bug exists -->
-
-## Fix Commit
-<!-- The commit with the fix applied -->
+<!-- Describe the bug this reproducer demonstrates -->
 
 ## How to Run
 ```bash
-./run.sh
-# Results written to results.json
+piledriver test {session_name} {bug_name}
 ```
 
+## Files
+- `reproduce.sh` - Test script (exit 0 = pass, exit 1 = fail)
+- `scenario.yaml` - Config (commit SHAs, setup commands)
+
 ## Expected Behavior
-- Base commit: At least one test should FAIL
-- Fix commit: All tests should PASS
+- base_commit: reproduce.sh exits 1 (bug present)
+- fix_commit: reproduce.sh exits 0 (bug fixed)
 """
 
-BUG_RUNSH_TEMPLATE = """#!/bin/bash
-set -e
+BUG_SCENARIO_TEMPLATE = """# Reproducer: {bug_name}
+# piledriver handles git operations - just fill in this config.
 
-# === REPRODUCER RULES ===
-# 1. SINGLE TEST: This reproducer should test ONE specific bug
-# 2. COMMIT-FIRST: BASE_COMMIT and FIX_COMMIT must be set BEFORE running
-# 3. NO DIRECT IMPORTS: Test the installed code, not patched copies
-# 4. SAME TEST: The same test must FAIL on base and PASS on fix
-#
-# Success = tests FAIL on BASE_COMMIT, PASS on FIX_COMMIT
+# REQUIRED: Commit where bug EXISTS (reproduce.sh should exit 1)
+base_commit: ""
 
-# === CONFIGURATION ===
-# YOU MUST SET THESE VALUES before running piledriver test:
-REPO_PATH="../../../<target-repo>"  # Path to repo under scrutiny
-BASE_COMMIT="<commit-sha>"          # Commit where bug EXISTS (tests should FAIL)
-FIX_COMMIT="<commit-sha>"           # Commit with fix APPLIED (tests should PASS)
-TEST_CMD="go test -v ./path/to/tests/..."  # Single test or test pattern
+# OPTIONAL: Commit with fix APPLIED (reproduce.sh should exit 0)
+# Leave empty to confirm bug exists without validating fix.
+fix_commit: ""
 
-# === HELPER FUNCTIONS ===
-run_tests() {
-    local commit=$1
-    cd "$REPO_PATH"
-    git checkout -q "$commit"
+# OPTIONAL: Path to target repo (default: current working directory)
+# repo_path: ""
 
-    # Run tests and capture results
-    # Modify this section based on your test framework
-    local output
-    local exit_code=0
-    output=$($TEST_CMD 2>&1) || exit_code=$?
+# OPTIONAL: Commands to run after checkout, before test
+# setup_commands:
+#   - "go mod tidy"
+"""
 
-    # Parse test results (adjust for your framework)
-    local total=$(echo "$output" | grep -c "^--- " || echo "0")
-    local failed=$(echo "$output" | grep -c "^--- FAIL" || echo "0")
-    local passed=$((total - failed))
+BUG_REPRODUCE_TEMPLATE = """#!/bin/bash
+# Reproducer: {bug_name}
+# Exit 0 = pass (bug fixed), Exit 1 = fail (bug present)
 
-    echo "{\\"total\\": $total, \\"passed\\": $passed, \\"failed\\": $failed}"
-    cd - > /dev/null
-    return $exit_code
-}
-
-# === MAIN ===
-echo "Testing base commit: $BASE_COMMIT"
-BASE_RESULT=$(run_tests "$BASE_COMMIT") || true
-
-echo "Testing fix commit: $FIX_COMMIT"
-FIX_RESULT=$(run_tests "$FIX_COMMIT")
-
-# Compute success
-BASE_FAILED=$(echo "$BASE_RESULT" | jq -r '.failed')
-FIX_FAILED=$(echo "$FIX_RESULT" | jq -r '.failed')
-
-if [[ "$BASE_FAILED" -gt 0 && "$FIX_FAILED" -eq 0 ]]; then
-    SUCCESS="true"
-else
-    SUCCESS="false"
-fi
-
-# Write results
-cat > results.json << EOF
-{
-  "base_commit": "$BASE_COMMIT",
-  "fix_commit": "$FIX_COMMIT",
-  "base_result": $BASE_RESULT,
-  "fix_result": $FIX_RESULT,
-  "success": $SUCCESS
-}
-EOF
-
-echo "Results written to results.json"
-echo "Success: $SUCCESS"
+# TODO: Write your test command here
+go test -run TestSpecificCase ./...
 """
 
 
@@ -361,117 +492,173 @@ echo "Success: $SUCCESS"
 
 GUIDANCE = {
     "init": {
-        "summary": "Session '{session}' initialized in IDLE phase.",
+        "summary": "Session '{session}' initialized in {phase} phase.",
         "next_steps": [
-            "Run `piledriver set-phase {session} SCOPING` to begin the hunt",
-            "Edit `.piledriver/{session}/boundary.md` to define:",
+            "Edit `piledriver/{session}/reconnaissance.md` to run automated analysis:",
+            "  - Race detectors (go test -race, cargo test, etc.)",
+            "  - Static analyzers (staticcheck, clippy, ruff)",
+            "  - Pattern searches for known bug signatures",
+            "  - Rank suspects by likelihood and severity",
+            "Or skip to SCOPING: `piledriver set-phase {session} SCOPING`",
+        ],
+        "reminder": "RECONNAISSANCE is optional. Skip if you already know what to investigate."
+    },
+    "init:scoping": {
+        "summary": "Session '{session}' initialized in SCOPING phase (skipped reconnaissance).",
+        "next_steps": [
+            "Edit `piledriver/{session}/boundary.md` to define:",
             "  - The suspected bug (Suspect section)",
-            "  - Components to model (Inside section)",
+            "  - Components to verify (Inside section)",
             "  - Components to treat as black boxes (Outside section)",
             "  - Interface points where inside meets outside",
+            "Start small - easier to expand than contract.",
         ],
-        "reminder": "Wait for human approval before advancing past SCOPING."
+        "reminder": "CRITICAL: Get human approval before advancing. Run `piledriver set-phase {session} ASSUMPTIONS` after approval."
+    },
+    "set-phase:RECONNAISSANCE": {
+        "summary": "Entered RECONNAISSANCE phase.",
+        "next_steps": [
+            "Complete `piledriver/{session}/reconnaissance.md`:",
+            "  - Run race detectors and static analyzers",
+            "  - Search for known bug patterns (TOCTOU, double-check locking, etc.)",
+            "  - Rank suspects by likelihood and severity",
+            "  - Recommend scope for verification",
+            "Move to SCOPING when ready: `piledriver set-phase {session} SCOPING`",
+        ],
+        "reminder": "This phase is optional. Skip to SCOPING anytime if you know what to investigate."
     },
     "set-phase:SCOPING": {
         "summary": "Entered SCOPING phase.",
         "next_steps": [
-            "Complete `.piledriver/{session}/boundary.md`:",
-            "  - Document the suspect",
-            "  - List what's INSIDE (to be modeled)",
-            "  - List what's OUTSIDE (assumptions)",
-            "  - Define interface points",
-            "Ask the human to review the boundary",
+            "Complete `piledriver/{session}/boundary.md`:",
+            "  - Document the suspect (what bug are we hunting?)",
+            "  - List what's INSIDE (components to verify)",
+            "  - List what's OUTSIDE (black boxes with assumptions)",
+            "  - Define interface points (where inside meets outside)",
+            "Start small - easier to expand than contract.",
+            "Every component must be explicitly IN or OUT, never ambiguous.",
         ],
-        "reminder": "Use `piledriver set-phase {session} ASSUMPTIONS` after human approval."
+        "reminder": "CRITICAL: Get human approval before advancing. Run `piledriver set-phase {session} ASSUMPTIONS` after approval."
     },
     "set-phase:ASSUMPTIONS": {
         "summary": "Entered ASSUMPTIONS phase.",
         "next_steps": [
-            "Complete `.piledriver/{session}/assumptions.md`:",
-            "  - For EACH interface point, document assumptions",
+            "Complete `piledriver/{session}/assumptions.md`:",
+            "  - For EACH interface point, document what you assume about the outside",
+            "  - Source your beliefs ('Code inspection of X shows...')",
             "  - Mark risk level (LOW/MEDIUM/HIGH)",
-            "  - Propose verification ideas",
-            "Ask the human to review assumptions",
+            "  - Propose verification ideas for risky assumptions",
+            "Think adversarially - what could the outside do to break things?",
         ],
-        "reminder": "Use `piledriver set-phase {session} VERIFICATION` after human approval."
+        "reminder": "CRITICAL: Get human approval before advancing. Run `piledriver set-phase {session} VERIFICATION` after approval."
     },
     "set-phase:VERIFICATION": {
         "summary": "Entered VERIFICATION phase.",
         "next_steps": [
-            "Write the TLA+ specification in `.piledriver/{session}/model.tla`",
-            "Create `.piledriver/{session}/model.cfg` with invariants to check",
-            "Run syntax check: `piledriver check {session} --sany`",
-            "Run model checker: `piledriver check {session}`",
-            "Analyze counterexamples or expand boundary if no issues found",
+            "Choose verification technique based on bug type:",
+            "  - TLA+: Concurrent systems, state machines, protocol bugs",
+            "  - Property testing: Data transformations, invariants",
+            "  - Fuzzing: Input validation, parsing bugs",
+            "  - Differential testing: Comparing implementations",
+            "  - Manual review: Simple logic bugs",
+            "Set technique: `piledriver technique {session} <type>`",
+            "For TLA+: `piledriver check {session}` runs the model checker",
         ],
-        "reminder": "If the model reveals the boundary was wrong, use `piledriver set-phase {session} SCOPING` to rescope."
+        "reminder": "Finding a violation is SUCCESS - you've proven the bug exists! If boundary was wrong: `piledriver set-phase {session} SCOPING`"
     },
     "set-phase:REPORT": {
         "summary": "Entered REPORT phase.",
         "next_steps": [
-            "Create `.piledriver/{session}/report.md` with:",
-            "  - Summary of findings",
-            "  - TLA+ model checking results",
-            "  - Assumption analysis",
-            "  - Recommendations",
+            "Revisit earlier artifacts and update if needed:",
+            "  - boundary.md: Does it still reflect what was actually verified?",
+            "  - assumptions.md: Were any assumptions validated or invalidated?",
+            "  - model.tla: Add comments explaining what the model proves",
+            "Create `piledriver/{session}/report.md` with:",
+            "  - Summary of what was investigated",
+            "  - Verification results and their interpretation",
+            "  - Bug relevance: When would this happen in production?",
+            "  - Assumption analysis: Which assumptions were validated/violated?",
+            "  - Recommendations for fixes",
+            "Create reproducers: `piledriver bug {session} <bug-name>`",
             "Generate PR draft: `piledriver pr {session}`",
         ],
-        "reminder": "Use `piledriver set-phase {session} IDLE` to close the hunt."
-    },
-    "set-phase:IDLE": {
-        "summary": "Hunt closed. Session returned to IDLE.",
-        "next_steps": [
-            "Review `.piledriver/{session}/report.md` for findings",
-            "If PR was drafted, create it with `gh pr create --body-file .piledriver/{session}/pr-draft.md`",
-        ],
-        "reminder": "Start a new hunt anytime with `piledriver set-phase {session} SCOPING`."
+        "reminder": "Preserve all session artifacts - update them, don't delete. Run `piledriver test {session}` before finalizing."
     },
     "bug": {
         "summary": "Bug reproducer '{bug}' created.",
         "next_steps": [
-            "Edit `.piledriver/{session}/reproducers/{bug}/run.sh`:",
-            "  - Set REPO_PATH to the repository under test",
-            "  - Set BASE_COMMIT to the commit where bug exists",
-            "  - Set FIX_COMMIT to the commit with the fix",
-            "  - Set TEST_CMD to the test command",
-            "Run validation: `piledriver test {session} {bug}`",
+            "1. Edit `reproduce.sh`: Write a simple test command",
+            "   - Exit 0 = test passes (bug fixed)",
+            "   - Exit 1 = test fails (bug present)",
+            "2. Edit `scenario.yaml`: Fill in commit SHAs",
+            "   - base_commit: where bug EXISTS",
+            "   - fix_commit: where bug is FIXED (optional)",
+            "3. Run: `piledriver test {session} {bug}`",
+            "   Piledriver handles git checkout automatically.",
         ],
-        "reminder": "Success = tests FAIL on base commit, PASS on fix commit. The fix must be COMMITTED before testing."
+        "reminder": "Keep reproduce.sh simple - just the test command. Piledriver handles git operations."
     },
     "check:success": {
         "summary": "TLC completed. No invariant violations found.",
         "next_steps": [
-            "Consider expanding the boundary to check more",
-            "Verify assumptions hold in real code",
-            "Move to REPORT phase if confident: `piledriver set-phase {session} REPORT`",
+            "This means the model is internally consistent, but:",
+            "  - The bug may exist outside your current boundary",
+            "  - Your invariants may not capture the bug",
+            "  - Your assumptions about the outside may be wrong",
+            "Consider: expand boundary, add invariants, or probe assumptions",
+            "Move to REPORT if confident: `piledriver set-phase {session} REPORT`",
         ],
-        "reminder": "No violations does not mean no bugs - only that the model is consistent."
+        "reminder": "No violations != no bugs. Verify assumptions hold in real code."
     },
     "check:violation": {
-        "summary": "TLC found invariant violation(s).",
+        "summary": "TLC found invariant violation(s) - potential bug proven!",
         "next_steps": [
-            "Study the counterexample trace",
-            "Determine if this is a real bug or a modeling error",
-            "If modeling error: rescope with `piledriver set-phase {session} SCOPING`",
-            "If real bug: document finding and create reproducer with `piledriver bug {session} <name>`",
+            "Study the counterexample trace carefully:",
+            "  - Does it represent a real execution path?",
+            "  - Is this the bug you were hunting, or a different one?",
+            "If modeling error: fix model or rescope with `piledriver set-phase {session} SCOPING`",
+            "If real bug: this is SUCCESS! Create reproducer: `piledriver bug {session} <name>`",
         ],
-        "reminder": "Counterexamples may indicate real bugs OR incorrect model assumptions."
+        "reminder": "Keep the 'broken' model that demonstrates the bug. Update it later to verify the fix works."
     },
     "check:syntax_error": {
         "summary": "SANY found syntax errors in the TLA+ specification.",
         "next_steps": [
-            "Fix the syntax errors in `.piledriver/{session}/model.tla`",
+            "Fix syntax errors in `piledriver/{session}/model.tla`",
             "Re-run syntax check: `piledriver check {session} --sany`",
+            "Common issues: missing operators, unbalanced parens, invalid identifiers",
         ],
-        "reminder": "Common issues: missing operators, unbalanced parentheses, invalid identifiers."
+        "reminder": "TLA+ is whitespace-sensitive. Check indentation in multi-line expressions."
     },
     "pr": {
-        "summary": "PR draft generated at `.piledriver/{session}/pr-draft.md`.",
+        "summary": "PR draft generated at `piledriver/{session}/pr-draft.md`.",
         "next_steps": [
-            "Review and edit the PR draft as needed",
+            "Review and edit the PR draft",
+            "Ensure reproducers pass: `piledriver test {session}`",
             "Create the PR: `gh pr create --title \"<title>\" --body-file .piledriver/{session}/pr-draft.md`",
         ],
         "reminder": "The draft is a starting point - refine it before creating the actual PR."
+    },
+    "test:success": {
+        "summary": "Reproducer validation PASSED.",
+        "next_steps": [
+            "The reproducer confirms: bug exists on base, fix works on fix commit",
+            "Document this in report.md",
+            "Generate PR draft: `piledriver pr {session}`",
+        ],
+        "reminder": "This is the ultimate validation that your findings are real."
+    },
+    "test:failure": {
+        "summary": "Reproducer validation FAILED.",
+        "next_steps": [
+            "Check the results.json for details",
+            "Common issues:",
+            "  - BASE_COMMIT or FIX_COMMIT not set correctly",
+            "  - Test isn't deterministic",
+            "  - Test doesn't actually exercise the bug",
+            "Fix the reproducer and re-run: `piledriver test {session} {bug}`",
+        ],
+        "reminder": "The fix must be COMMITTED before testing. Check git log."
     },
 }
 
@@ -508,32 +695,97 @@ def format_guidance(template_key: str, **kwargs) -> str:
 
 
 def get_piledriver_root() -> Path:
-    """Find the .piledriver directory, searching upward from cwd."""
+    """Find the piledriver directory, searching upward from cwd.
+
+    Supports both 'piledriver/' (preferred) and '.piledriver/' (legacy).
+    """
     cwd = Path.cwd()
     for parent in [cwd] + list(cwd.parents):
+        # Prefer non-dot directory
         if (parent / PILEDRIVER_DIR).exists():
             return parent / PILEDRIVER_DIR
+        # Fall back to legacy .piledriver
+        if (parent / PILEDRIVER_DIR_LEGACY).exists():
+            return parent / PILEDRIVER_DIR_LEGACY
+    # Default to non-dot for new projects
     return cwd / PILEDRIVER_DIR
+
+
+def validate_session_name(name: str) -> tuple:
+    """Validate session name. Returns (valid: bool, error: str)."""
+    if not name:
+        return False, "Session name cannot be empty"
+    if name != name.lower():
+        return False, f"Session name must be lowercase (got '{name}', try '{name.lower()}')"
+    if not name[0].isalpha():
+        return False, "Session name must start with a letter"
+    if not all(c.isalnum() or c in '-_' for c in name):
+        return False, "Session name can only contain letters, numbers, hyphens, and underscores"
+    return True, ""
+
+
+def add_to_git_exclude(piledriver_dir: Path):
+    """Add piledriver directory to .git/info/exclude if not already present."""
+    git_dir = piledriver_dir.parent / ".git"
+    if not git_dir.exists():
+        return  # Not a git repo
+
+    exclude_file = git_dir / "info" / "exclude"
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+
+    dir_name = piledriver_dir.name
+    exclude_entry = f"{dir_name}/"
+
+    # Check if already excluded
+    if exclude_file.exists():
+        content = exclude_file.read_text()
+        if exclude_entry in content.splitlines():
+            return  # Already excluded
+
+    # Append to exclude file
+    with open(exclude_file, "a") as f:
+        f.write(f"\n# Piledriver session data (local only)\n{exclude_entry}\n")
 
 
 def cmd_init(args):
     """Initialize a new analysis session."""
     session_name = args.session_name
-    piledriver_dir = Path.cwd() / PILEDRIVER_DIR
+    skip_recon = getattr(args, 'skip_recon', False)
+
+    # Validate session name
+    valid, error = validate_session_name(session_name)
+    if not valid:
+        print(f"Error: {error}")
+        return 1
+
+    # Check for existing piledriver dir (prefer existing, create new as non-dot)
+    piledriver_dir = get_piledriver_root()
+    if not piledriver_dir.exists():
+        piledriver_dir = Path.cwd() / PILEDRIVER_DIR
+
     session_dir = piledriver_dir / session_name
 
     if session_dir.exists():
         print(f"Error: Session '{session_name}' already exists at {session_dir}")
         return 1
 
+    # Determine initial phase
+    initial_phase = "SCOPING" if skip_recon else "RECONNAISSANCE"
+
     # Create directories
     session_dir.mkdir(parents=True)
 
+    # Add to .git/info/exclude (keeps piledriver/ out of version control)
+    add_to_git_exclude(piledriver_dir)
+
     # Create state.json
-    state = create_initial_state(session_name)
+    state = create_initial_state(session_name, initial_phase)
     write_state(session_dir, state)
 
     # Create placeholder files
+    (session_dir / "reconnaissance.md").write_text(
+        RECONNAISSANCE_TEMPLATE.format(session_name=session_name)
+    )
     (session_dir / "boundary.md").write_text(
         BOUNDARY_TEMPLATE.format(session_name=session_name)
     )
@@ -547,14 +799,16 @@ def cmd_init(args):
     (session_dir / "probe.md").write_text(PROBE_TEMPLATE)
 
     print(f"Created session '{session_name}' at {session_dir}")
-    print(f"  - state.json (phase: IDLE)")
+    print(f"  - state.json (phase: {initial_phase})")
+    print(f"  - reconnaissance.md")
     print(f"  - boundary.md")
     print(f"  - assumptions.md")
     print(f"  - model.tla")
     print(f"  - probe.md")
 
     # Print guidance
-    print(format_guidance("init", session=session_name))
+    guidance_key = "init:scoping" if skip_recon else "init"
+    print(format_guidance(guidance_key, session=session_name, phase=initial_phase))
 
     return 0
 
@@ -584,20 +838,182 @@ def cmd_bug(args):
 
     # Create stub files
     (bug_dir / "README.md").write_text(
-        BUG_README_TEMPLATE.format(bug_name=bug_name)
+        BUG_README_TEMPLATE.format(bug_name=bug_name, session_name=session_name)
     )
-    runsh_path = bug_dir / "run.sh"
-    runsh_path.write_text(BUG_RUNSH_TEMPLATE)
-    runsh_path.chmod(0o755)
+    (bug_dir / "scenario.yaml").write_text(
+        BUG_SCENARIO_TEMPLATE.format(bug_name=bug_name)
+    )
+    reproduce_path = bug_dir / "reproduce.sh"
+    reproduce_path.write_text(BUG_REPRODUCE_TEMPLATE.format(bug_name=bug_name))
+    reproduce_path.chmod(0o755)
 
     print(f"Created bug reproducer '{bug_name}' at {bug_dir}")
     print(f"  - README.md")
-    print(f"  - run.sh (executable)")
+    print(f"  - scenario.yaml (fill in commit SHAs)")
+    print(f"  - reproduce.sh (write your test)")
 
     # Print guidance
     print(format_guidance("bug", session=session_name, bug=bug_name))
 
     return 0
+
+
+# === Reproducer helpers ===
+
+def parse_scenario_yaml(path: Path) -> dict:
+    """Parse a simple scenario.yaml file. Returns dict with config values."""
+    config = {
+        "base_commit": "",
+        "fix_commit": "",
+        "repo_path": "",
+        "setup_commands": [],
+    }
+
+    if not path.exists():
+        return config
+
+    content = path.read_text()
+    current_list_key = None
+
+    for line in content.splitlines():
+        # Skip comments and empty lines
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            current_list_key = None
+            continue
+
+        # Handle list items (for setup_commands)
+        if stripped.startswith("- ") and current_list_key:
+            value = stripped[2:].strip().strip('"').strip("'")
+            config[current_list_key].append(value)
+            continue
+
+        # Handle key: value pairs
+        if ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            if key in config:
+                if key == "setup_commands":
+                    current_list_key = key
+                else:
+                    config[key] = value
+                    current_list_key = None
+
+    return config
+
+
+def git_get_state(repo_path: Path) -> dict:
+    """Get current git state (branch/commit, dirty status)."""
+    try:
+        # Get current commit
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        commit = result.stdout.strip()
+
+        # Get current branch (if any)
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        branch = result.stdout.strip()
+        if branch == "HEAD":
+            branch = None  # Detached HEAD
+
+        # Check for uncommitted changes
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        dirty = bool(result.stdout.strip())
+
+        return {"commit": commit, "branch": branch, "dirty": dirty}
+    except subprocess.CalledProcessError:
+        return None
+
+
+def git_stash_if_dirty(repo_path: Path, state: dict) -> bool:
+    """Stash changes if working directory is dirty. Returns True if stashed."""
+    if not state or not state.get("dirty"):
+        return False
+
+    try:
+        subprocess.run(
+            ["git", "stash", "push", "-m", "piledriver-test-stash"],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def git_checkout(repo_path: Path, commit: str) -> bool:
+    """Checkout a specific commit. Returns True on success."""
+    try:
+        subprocess.run(
+            ["git", "checkout", "-q", commit],
+            cwd=repo_path, capture_output=True, text=True, check=True
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"    git checkout failed: {e.stderr.strip()}")
+        return False
+
+
+def git_restore_state(repo_path: Path, state: dict, stashed: bool):
+    """Restore git to original state."""
+    if not state:
+        return
+
+    try:
+        # Checkout original branch or commit
+        target = state.get("branch") or state.get("commit")
+        if target:
+            subprocess.run(
+                ["git", "checkout", "-q", target],
+                cwd=repo_path, capture_output=True, text=True, check=True
+            )
+
+        # Pop stash if we stashed
+        if stashed:
+            subprocess.run(
+                ["git", "stash", "pop"],
+                cwd=repo_path, capture_output=True, text=True, check=True
+            )
+    except subprocess.CalledProcessError:
+        pass  # Best effort restore
+
+
+def run_reproduce_script(bug_dir: Path, repo_path: Path, setup_commands: list) -> tuple:
+    """Run reproduce.sh and return (exit_code, output)."""
+    # Run setup commands first
+    for cmd in setup_commands:
+        try:
+            subprocess.run(
+                cmd, shell=True, cwd=repo_path,
+                capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            return (-1, f"Setup command failed: {cmd}\n{e.stderr}")
+
+    # Run reproduce.sh
+    reproduce_sh = bug_dir / "reproduce.sh"
+    try:
+        result = subprocess.run(
+            ["bash", str(reproduce_sh)],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout per run
+        )
+        return (result.returncode, result.stdout + result.stderr)
+    except subprocess.TimeoutExpired:
+        return (-1, "TIMEOUT: exceeded 5 minutes")
+    except Exception as e:
+        return (-1, str(e))
 
 
 def cmd_test(args):
@@ -632,98 +1048,189 @@ def cmd_test(args):
     results = []
     for bug_dir in sorted(bug_dirs):
         bug = bug_dir.name
-        runsh = bug_dir / "run.sh"
+        scenario_file = bug_dir / "scenario.yaml"
+        reproduce_sh = bug_dir / "reproduce.sh"
         results_file = bug_dir / "results.json"
 
-        if not runsh.exists():
-            print(f"[{bug}] SKIP - no run.sh")
-            results.append((bug, "SKIP", "no run.sh"))
+        # Also support legacy run.sh for backwards compatibility
+        legacy_runsh = bug_dir / "run.sh"
+
+        # Check for required files
+        if not reproduce_sh.exists() and not legacy_runsh.exists():
+            print(f"[{bug}] SKIP - no reproduce.sh")
+            results.append((bug, "SKIP", "no reproduce.sh"))
             continue
 
-        print(f"[{bug}] Running...")
+        # Legacy mode: if run.sh exists but no scenario.yaml, use old behavior
+        if legacy_runsh.exists() and not scenario_file.exists():
+            print(f"[{bug}] Running (legacy mode)...")
+            try:
+                result = subprocess.run(
+                    ["bash", str(legacy_runsh)],
+                    cwd=str(bug_dir),
+                    capture_output=True, text=True, timeout=600
+                )
+            except subprocess.TimeoutExpired:
+                print(f"[{bug}] TIMEOUT")
+                results.append((bug, "TIMEOUT", "exceeded 10 minutes"))
+                continue
+            except Exception as e:
+                print(f"[{bug}] ERROR - {e}")
+                results.append((bug, "ERROR", str(e)))
+                continue
 
-        # Execute run.sh
-        try:
-            result = subprocess.run(
-                ["bash", str(runsh)],
-                cwd=str(bug_dir),
-                capture_output=True,
-                text=True,
-                timeout=600  # 10 minute timeout
-            )
-        except subprocess.TimeoutExpired:
-            print(f"[{bug}] TIMEOUT")
-            results.append((bug, "TIMEOUT", "exceeded 10 minutes"))
-            continue
-        except Exception as e:
-            print(f"[{bug}] ERROR - {e}")
-            results.append((bug, "ERROR", str(e)))
-            continue
-
-        # Read results.json
-        if not results_file.exists():
-            print(f"[{bug}] ERROR - no results.json generated")
-            results.append((bug, "ERROR", "no results.json"))
-            continue
-
-        try:
-            with open(results_file) as f:
-                data = json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"[{bug}] ERROR - invalid results.json: {e}")
-            results.append((bug, "ERROR", f"invalid JSON: {e}"))
-            continue
-
-        # Evaluate results
-        success = data.get("success", False)
-        base_result = data.get("base_result") or {}
-        fix_result = data.get("fix_result")
-        fix_commit = data.get("fix_commit")
-
-        # Handle intermediate state: bug confirmed but no fix commit set
-        if fix_result is None or fix_commit is None:
-            if success == "bug_confirmed":
-                status = "PENDING"
-                detail = "bug confirmed - set FIX_COMMIT in run.sh to validate fix"
-            elif success == "inconclusive":
-                status = "PENDING"
-                detail = "bug not reliably reproduced - adjust test or retry"
+            # Read results.json from legacy script
+            if results_file.exists():
+                try:
+                    with open(results_file) as f:
+                        data = json.load(f)
+                    success = data.get("success", False)
+                    if success is True:
+                        results.append((bug, "PASS", "legacy mode"))
+                    else:
+                        results.append((bug, "FAIL", "legacy mode"))
+                    print(f"[{bug}] {'PASS' if success else 'FAIL'} (legacy mode)")
+                except:
+                    results.append((bug, "ERROR", "invalid results.json"))
+                    print(f"[{bug}] ERROR (invalid results.json)")
             else:
-                status = "ERROR"
-                detail = f"fix_result is null but success={success!r} (expected 'bug_confirmed')"
+                results.append((bug, "ERROR", "no results.json"))
+                print(f"[{bug}] ERROR (no results.json)")
+            continue
+
+        # New mode: scenario.yaml + reproduce.sh
+        config = parse_scenario_yaml(scenario_file)
+        base_commit = config.get("base_commit", "").strip()
+        fix_commit = config.get("fix_commit", "").strip()
+        repo_path_str = config.get("repo_path", "").strip()
+        setup_commands = config.get("setup_commands", [])
+
+        if not base_commit:
+            print(f"[{bug}] SKIP - base_commit not set in scenario.yaml")
+            results.append((bug, "SKIP", "base_commit not set"))
+            continue
+
+        # Determine repo path
+        if repo_path_str:
+            repo_path = Path(repo_path_str)
+            if not repo_path.is_absolute():
+                repo_path = bug_dir / repo_path_str
+        else:
+            # Default: search upward from piledriver dir for .git
+            repo_path = piledriver_dir.parent
+            while repo_path != repo_path.parent:
+                if (repo_path / ".git").exists():
+                    break
+                repo_path = repo_path.parent
+
+        if not (repo_path / ".git").exists():
+            print(f"[{bug}] ERROR - no git repo found at {repo_path}")
+            results.append((bug, "ERROR", "no git repo found"))
+            continue
+
+        print(f"[{bug}] Testing in {repo_path}...")
+
+        # Save git state
+        original_state = git_get_state(repo_path)
+        if not original_state:
+            print(f"[{bug}] ERROR - could not get git state")
+            results.append((bug, "ERROR", "git state error"))
+            continue
+
+        stashed = git_stash_if_dirty(repo_path, original_state)
+        if stashed:
+            print(f"    Stashed uncommitted changes")
+
+        try:
+            # Test on base commit (should FAIL - bug present)
+            print(f"    Checking out base: {base_commit[:8]}...")
+            if not git_checkout(repo_path, base_commit):
+                results.append((bug, "ERROR", "git checkout base failed"))
+                continue
+
+            base_exit, base_output = run_reproduce_script(bug_dir, repo_path, setup_commands)
+            base_failed = base_exit != 0
+            print(f"    Base result: {'FAIL' if base_failed else 'PASS'} (exit {base_exit})")
+
+            # Test on fix commit if specified
+            if fix_commit:
+                print(f"    Checking out fix: {fix_commit[:8]}...")
+                if not git_checkout(repo_path, fix_commit):
+                    results.append((bug, "ERROR", "git checkout fix failed"))
+                    continue
+
+                fix_exit, fix_output = run_reproduce_script(bug_dir, repo_path, setup_commands)
+                fix_passed = fix_exit == 0
+                print(f"    Fix result: {'PASS' if fix_passed else 'FAIL'} (exit {fix_exit})")
+
+                # Evaluate: base should fail, fix should pass
+                if base_failed and fix_passed:
+                    status = "PASS"
+                    detail = f"base fails (exit {base_exit}), fix passes"
+                elif not base_failed:
+                    status = "FAIL"
+                    detail = f"base should fail but passed (exit {base_exit})"
+                else:
+                    status = "FAIL"
+                    detail = f"fix should pass but failed (exit {fix_exit})"
+
+                # Write results.json
+                result_data = {
+                    "base_commit": base_commit,
+                    "fix_commit": fix_commit,
+                    "base_exit": base_exit,
+                    "fix_exit": fix_exit,
+                    "success": base_failed and fix_passed,
+                }
+            else:
+                # No fix commit - just confirm bug exists
+                if base_failed:
+                    status = "CONFIRMED"
+                    detail = f"bug confirmed (exit {base_exit})"
+                else:
+                    status = "FAIL"
+                    detail = f"test passed on base - bug not reproduced (exit {base_exit})"
+
+                result_data = {
+                    "base_commit": base_commit,
+                    "fix_commit": None,
+                    "base_exit": base_exit,
+                    "fix_exit": None,
+                    "success": "bug_confirmed" if base_failed else False,
+                }
+
+            # Write results.json
+            with open(results_file, "w") as f:
+                json.dump(result_data, f, indent=2)
+
             print(f"[{bug}] {status} ({detail})")
             results.append((bug, status, detail))
-            continue
 
-        base_failed = base_result.get("failed", 0)
-        fix_failed = fix_result.get("failed", 0)
-
-        if success is True:
-            status = "PASS"
-            detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
-        else:
-            status = "FAIL"
-            if base_failed == 0:
-                detail = f"base had 0 failures (expected >0)"
-            elif fix_failed > 0:
-                detail = f"fix still has {fix_failed} failures"
-            else:
-                detail = f"base: {base_failed} fail, fix: {fix_failed} fail"
-
-        print(f"[{bug}] {status} ({detail})")
-        results.append((bug, status, detail))
+        finally:
+            # Always restore git state
+            print(f"    Restoring git state...")
+            git_restore_state(repo_path, original_state, stashed)
 
     # Print summary
     print()
     print("=" * 60)
     print("Summary:")
     passed = sum(1 for _, status, _ in results if status == "PASS")
+    failed = sum(1 for _, status, _ in results if status == "FAIL")
     total = len(results)
     print(f"  {passed}/{total} reproducers passing")
 
     for bug, status, detail in results:
         icon = "+" if status == "PASS" else "-" if status == "FAIL" else "?"
         print(f"  [{icon}] {bug}: {status}")
+
+    # Print guidance
+    if passed == total and total > 0:
+        print(format_guidance("test:success", session=session_name))
+    elif failed > 0:
+        # Get first failed bug for guidance
+        first_failed = next((b for b, s, _ in results if s == "FAIL"), bug_name or "bug")
+        print(format_guidance("test:failure", session=session_name, bug=first_failed))
 
     return 0 if passed == total else 1
 
@@ -735,7 +1242,7 @@ def cmd_status(args):
     piledriver_dir = get_piledriver_root()
 
     if not piledriver_dir.exists():
-        print("No .piledriver directory found.")
+        print("No piledriver directory found.")
         print("Run 'piledriver init <session_name>' to start.")
         return 1
 
@@ -755,7 +1262,7 @@ def cmd_status(args):
 
         # List files
         files = []
-        for f in ["boundary.md", "assumptions.md", "model.tla", "model.cfg", "probe.md"]:
+        for f in ["reconnaissance.md", "boundary.md", "assumptions.md", "model.tla", "model.cfg", "probe.md"]:
             if (session_dir / f).exists():
                 files.append(f)
         print(f"Files: {', '.join(files)}")
@@ -807,6 +1314,12 @@ def cmd_status(args):
         else:
             print()
             print("Reproducers: none")
+
+        # Print guidance for current phase
+        if phase and phase != "UNKNOWN" and phase != "NO STATE":
+            guidance_key = f"set-phase:{phase}"
+            if guidance_key in GUIDANCE:
+                print(format_guidance(guidance_key, session=session_name))
 
     else:
         # List all sessions
@@ -1032,6 +1545,141 @@ def cmd_check(args):
     return 0 if parsed["success"] else 1
 
 
+# === Verification technique management ===
+
+VERIFICATION_TECHNIQUES = {
+    "tla+": {
+        "name": "TLA+ Formal Modeling",
+        "description": "For protocol bugs, complex state machines, concurrent systems",
+        "artifact": "model.tla",
+        "template": "MODEL_TLA_TEMPLATE",
+        "when_to_use": [
+            "Protocol bugs requiring 4+ steps to manifest",
+            "Multiple interacting state machines",
+            "Complex interleavings humans can't enumerate",
+            "Distributed system coordination",
+        ],
+    },
+    "property-test": {
+        "name": "Property Testing",
+        "description": "For data transformation bugs, pure function invariants",
+        "artifact": "properties.md",
+        "template": "PROPERTIES_TEMPLATE",
+        "when_to_use": [
+            "Function should satisfy algebraic properties",
+            "Data transformation invariants",
+            "Roundtrip/idempotency requirements",
+            "Large input spaces needing sampling",
+        ],
+    },
+    "fuzz": {
+        "name": "Fuzzing",
+        "description": "For input validation bugs, parsing errors, crash discovery",
+        "artifact": "fuzz_plan.md",
+        "template": "FUZZ_PLAN_TEMPLATE",
+        "when_to_use": [
+            "Input parsing or validation code",
+            "APIs accepting external input",
+            "Crash/panic discovery",
+            "Memory safety issues",
+        ],
+    },
+    "diff-test": {
+        "name": "Differential Testing",
+        "description": "For comparing implementations (old vs new, reference vs optimized)",
+        "artifact": "diff_test.md",
+        "template": "DIFF_TEST_TEMPLATE",
+        "when_to_use": [
+            "Refactoring that should preserve behavior",
+            "Multiple implementations that should agree",
+            "Migration from one system to another",
+            "Optimization that shouldn't change results",
+        ],
+    },
+    "manual": {
+        "name": "Manual Review",
+        "description": "For simple logic bugs where formal methods are overkill",
+        "artifact": "review_checklist.md",
+        "template": "REVIEW_CHECKLIST_TEMPLATE",
+        "when_to_use": [
+            "Simple logic errors",
+            "Code review findings",
+            "Lint-detectable issues",
+            "Obvious off-by-one or null check bugs",
+        ],
+    },
+}
+
+
+def cmd_technique(args):
+    """View or set verification technique for a session."""
+    session_name = args.session_name
+    technique = getattr(args, 'technique', None)
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    state = read_state(session_dir)
+    if state is None:
+        print(f"Error: No state.json found for session '{session_name}'")
+        return 1
+
+    current_technique = state.get("verification_technique")
+    current_reasoning = state.get("technique_reasoning")
+
+    # If no technique specified, show current and list options
+    if not technique:
+        print(f"Session: {session_name}")
+        print(f"Current technique: {current_technique or 'not set'}")
+        if current_reasoning:
+            print(f"Reasoning: {current_reasoning}")
+        print()
+        print("Available techniques:")
+        for key, info in VERIFICATION_TECHNIQUES.items():
+            print(f"  {key:15} - {info['description']}")
+        print()
+        print(f"Set with: piledriver technique {session_name} <technique>")
+        return 0
+
+    # Validate technique
+    if technique not in VERIFICATION_TECHNIQUES:
+        print(f"Error: Unknown technique '{technique}'")
+        print(f"Valid techniques: {', '.join(VERIFICATION_TECHNIQUES.keys())}")
+        return 1
+
+    info = VERIFICATION_TECHNIQUES[technique]
+
+    # Update state
+    state["verification_technique"] = technique
+    state["technique_reasoning"] = f"User selected: {info['name']}"
+    write_state(session_dir, state)
+
+    # Create artifact file if it doesn't exist
+    artifact_file = session_dir / info["artifact"]
+    if not artifact_file.exists():
+        template_name = info["template"]
+        template = globals().get(template_name, "")
+        if template:
+            if "{module_name}" in template:
+                module_name = "".join(word.capitalize() for word in session_name.replace("-", "_").split("_"))
+                template = template.format(module_name=module_name)
+            artifact_file.write_text(template)
+            print(f"Created {info['artifact']}")
+
+    print(f"Technique set to: {info['name']}")
+    print(f"Artifact file: {info['artifact']}")
+    print()
+    print("When to use this technique:")
+    for reason in info["when_to_use"]:
+        print(f"  - {reason}")
+
+    return 0
+
+
 # === PR draft generation ===
 
 PR_DRAFT_TEMPLATE = """# {title}
@@ -1216,6 +1864,43 @@ def cmd_set_phase(args):
     return 0
 
 
+def cmd_summary(args):
+    """Set or view the task summary for a session."""
+    session_name = args.session_name
+    summary_text = args.summary
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    state = read_state(session_dir)
+    if not state:
+        print(f"Error: No state.json found for session '{session_name}'")
+        return 1
+
+    if summary_text is None:
+        # View current summary
+        current_summary = state.get("summary", "")
+        if current_summary:
+            print(f"Summary: {current_summary}")
+        else:
+            print("No summary set.")
+            print(f"Set with: piledriver summary {session_name} \"<summary>\"")
+        return 0
+
+    # Set summary
+    state["summary"] = summary_text
+    state["last_modified"] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    write_state(session_dir, state)
+
+    print(f"Summary updated: {summary_text}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Piledriver: TLA+ Bug Hunter CLI",
@@ -1245,7 +1930,9 @@ Examples:
 
     # init command
     init_parser = subparsers.add_parser("init", help="Start a new analysis session")
-    init_parser.add_argument("session_name", help="Name for the session")
+    init_parser.add_argument("session_name", help="Name for the session (lowercase)")
+    init_parser.add_argument("--skip-recon", action="store_true", dest="skip_recon",
+                            help="Skip RECONNAISSANCE phase, start in SCOPING")
 
     # bug command
     bug_parser = subparsers.add_parser("bug", help="Create a bug reproducer scaffold")
@@ -1264,7 +1951,7 @@ Examples:
     # set-phase command
     set_phase_parser = subparsers.add_parser("set-phase", help="Transition to a new phase")
     set_phase_parser.add_argument("session_name", help="Session to transition")
-    set_phase_parser.add_argument("phase", help="Target phase (SCOPING, ASSUMPTIONS, VERIFICATION, REPORT, IDLE)")
+    set_phase_parser.add_argument("phase", help="Target phase (RECONNAISSANCE, SCOPING, ASSUMPTIONS, VERIFICATION, REPORT)")
     set_phase_parser.add_argument("--force", action="store_true", help="Force transition even if validation fails")
 
     # check command
@@ -1275,6 +1962,17 @@ Examples:
     # pr command
     pr_parser = subparsers.add_parser("pr", help="Generate PR draft from report")
     pr_parser.add_argument("session_name", help="Session to generate PR for")
+
+    # technique command
+    technique_parser = subparsers.add_parser("technique", help="View or set verification technique")
+    technique_parser.add_argument("session_name", help="Session to configure")
+    technique_parser.add_argument("technique", nargs="?",
+                                  help="Technique to set (tla+, property-test, fuzz, diff-test, manual)")
+
+    # summary command
+    summary_parser = subparsers.add_parser("summary", help="View or set task summary")
+    summary_parser.add_argument("session_name", help="Session to configure")
+    summary_parser.add_argument("summary", nargs="?", help="Summary text (view if not provided)")
 
     args = parser.parse_args()
 
@@ -1296,6 +1994,10 @@ Examples:
         return cmd_check(args)
     elif args.command == "pr":
         return cmd_pr(args)
+    elif args.command == "technique":
+        return cmd_technique(args)
+    elif args.command == "summary":
+        return cmd_summary(args)
     else:
         parser.print_help()
         return 1

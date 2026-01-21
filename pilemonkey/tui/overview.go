@@ -28,11 +28,30 @@ var (
 				Bold(true).
 				Padding(0, 1)
 
-	fileExistsStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#50fa7b"))
+	fileFilledStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#50fa7b")) // Green - has real content
+
+	fileTemplateStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#f1fa8c")) // Yellow - just template
 
 	fileMissingStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#6272a4"))
+				Foreground(lipgloss.Color("#6272a4")) // Gray - doesn't exist
+
+	// Alias for backwards compatibility
+	fileExistsStyle = fileFilledStyle
+
+	// TLC status styles - semantic colors for bug hunting context
+	tlcViolationStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#50fa7b")). // Green - found bug (goal achieved!)
+				Bold(true)
+
+	tlcNoViolationStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#f1fa8c")). // Yellow - may need review
+				Bold(true)
+
+	tlcErrorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ff5555")). // Red - model broken
+			Bold(true)
 
 	sectionTitleStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#8be9fd")).
@@ -96,6 +115,16 @@ func renderOverviewContent(m Model, height int) string {
 	var lines []string
 
 	lines = append(lines, "")
+
+	// Task summary (if set)
+	if m.sessionInfo != nil && m.sessionInfo.State != nil && m.sessionInfo.State.Summary != "" {
+		lines = append(lines, sectionTitleStyle.Render("  Task Summary"))
+		lines = append(lines, "")
+		// Wrap summary to width, indent
+		summary := "    " + m.sessionInfo.State.Summary
+		lines = append(lines, summary)
+		lines = append(lines, "")
+	}
 
 	// Phase progress
 	lines = append(lines, sectionTitleStyle.Render("  Phase Progress"))
@@ -187,12 +216,13 @@ func renderPhaseProgress(m Model) []string {
 func renderFileChecklist(m Model) []string {
 	type fileCheck struct {
 		name   string
-		exists bool
+		status state.FileStatus
 	}
 
 	var files []fileCheck
 	if m.sessionInfo != nil {
 		files = []fileCheck{
+			{"reconnaissance.md", m.sessionInfo.Files.Reconnaissance},
 			{"boundary.md", m.sessionInfo.Files.Boundary},
 			{"assumptions.md", m.sessionInfo.Files.Assumptions},
 			{"model.tla", m.sessionInfo.Files.ModelTLA},
@@ -201,21 +231,26 @@ func renderFileChecklist(m Model) []string {
 		}
 	} else {
 		files = []fileCheck{
-			{"boundary.md", false},
-			{"assumptions.md", false},
-			{"model.tla", false},
-			{"model.cfg", false},
-			{"probe.md", false},
+			{"reconnaissance.md", state.FileMissing},
+			{"boundary.md", state.FileMissing},
+			{"assumptions.md", state.FileMissing},
+			{"model.tla", state.FileMissing},
+			{"model.cfg", state.FileMissing},
+			{"probe.md", state.FileMissing},
 		}
 	}
 
 	var line1Parts, line2Parts []string
 	for i, f := range files {
 		var icon, styled string
-		if f.exists {
+		switch f.status {
+		case state.FileFilled:
 			icon = "✓"
-			styled = fileExistsStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
-		} else {
+			styled = fileFilledStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
+		case state.FileTemplate:
+			icon = "◐" // Half-filled circle for template
+			styled = fileTemplateStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
+		default: // FileMissing
 			icon = "○"
 			styled = fileMissingStyle.Render(fmt.Sprintf("%s %s", icon, f.name))
 		}
@@ -268,13 +303,16 @@ func renderTLCStatus(m Model) string {
 		return "    " + fileMissingStyle.Render("No TLC runs yet")
 	}
 
-	// Format: "TLC: 1234 states, no violations" or "TLC: 1234 states, 2 violations"
+	// Semantic colors for bug hunting:
+	// - Green (tlcViolationStyle): Violation found = bug found = goal achieved!
+	// - Yellow (tlcNoViolationStyle): No violations = may need to expand model
+	// - Red (tlcErrorStyle): Errors = model is broken, needs fixing
 	var status string
 	if result.SanyOnly {
 		if result.Success {
 			status = fileExistsStyle.Render("Syntax OK")
 		} else {
-			status = removedLineStyle.Render("Syntax errors")
+			status = tlcErrorStyle.Render("Syntax errors")
 		}
 	} else {
 		stateInfo := fmt.Sprintf("%d states", result.StatesGenerated)
@@ -283,11 +321,14 @@ func renderTLCStatus(m Model) string {
 		}
 
 		if len(result.Violations) > 0 {
-			status = fmt.Sprintf("%s, %s", stateInfo, removedLineStyle.Render(fmt.Sprintf("%d violations", len(result.Violations))))
+			// Green: Found violation = found bug = success in bug hunting!
+			status = fmt.Sprintf("%s, %s", stateInfo, tlcViolationStyle.Render(fmt.Sprintf("%d violations ✓", len(result.Violations))))
 		} else if result.Success {
-			status = fmt.Sprintf("%s, %s", stateInfo, fileExistsStyle.Render("no violations"))
+			// Yellow: No violations - model may need review/expansion
+			status = fmt.Sprintf("%s, %s", stateInfo, tlcNoViolationStyle.Render("no violations"))
 		} else {
-			status = fmt.Sprintf("%s, %s", stateInfo, removedLineStyle.Render("errors"))
+			// Red: Errors - model is broken
+			status = fmt.Sprintf("%s, %s", stateInfo, tlcErrorStyle.Render("errors"))
 		}
 	}
 
