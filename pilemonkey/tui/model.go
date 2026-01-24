@@ -15,6 +15,7 @@ type ViewMode int
 const (
 	ViewModeDiff ViewMode = iota
 	ViewModeOverview
+	ViewModeCritic
 )
 
 // ChangesetMsg is sent when a new changeset arrives
@@ -39,11 +40,16 @@ type Model struct {
 	viewMode ViewMode
 
 	// Overview mode state
-	sessionInfo   *state.SessionInfo
-	viewingPhase  state.Phase // which phase's notes we're viewing
-	editingNote   bool        // currently editing a note
-	noteInput     string      // current note being edited
-	noteInputPos  int         // cursor position in note input
+	sessionInfo  *state.SessionInfo
+	viewingPhase state.Phase // which phase's notes we're viewing
+	editingNote  bool        // currently editing a note
+	noteInput    string      // current note being edited
+	noteInputPos int         // cursor position in note input
+
+	// Critic mode state
+	criticEntries     []state.CriticEntry // loaded critic exchanges
+	criticIndex       int                 // current exchange being viewed (0 = oldest)
+	criticScrollOffset int                // scroll position within current exchange
 
 	// Shared state
 	width   int
@@ -127,10 +133,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case matchesKey(msg, m.keys.ToggleView):
-		// Toggle between diff and overview mode
-		if m.viewMode == ViewModeDiff {
+		// Cycle through views: Diff → Overview → Critic → Diff
+		switch m.viewMode {
+		case ViewModeDiff:
 			m.viewMode = ViewModeOverview
-		} else {
+		case ViewModeOverview:
+			m.viewMode = ViewModeCritic
+			// Load critic log when entering critic mode
+			if m.sessionInfo != nil && m.sessionInfo.Dir != "" {
+				entries, _ := state.LoadCriticLog(m.sessionInfo.Dir)
+				m.criticEntries = entries
+				if len(entries) > 0 {
+					m.criticIndex = len(entries) - 1 // Start at newest
+				}
+				m.criticScrollOffset = 0
+			}
+		case ViewModeCritic:
 			m.viewMode = ViewModeDiff
 			// When switching to diff mode in live mode, jump to newest changeset
 			if m.liveMode {
@@ -142,10 +160,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Mode-specific keys
-	if m.viewMode == ViewModeDiff {
+	switch m.viewMode {
+	case ViewModeDiff:
 		return m.handleDiffKey(msg)
+	case ViewModeOverview:
+		return m.handleOverviewKey(msg)
+	case ViewModeCritic:
+		return m.handleCriticKey(msg)
 	}
-	return m.handleOverviewKey(msg)
+	return m, nil
 }
 
 func (m Model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -238,6 +261,58 @@ func (m Model) handleOverviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case matchesKey(msg, m.keys.ScrollDown):
 		m.scrollOffset++
+	}
+
+	return m, nil
+}
+
+func (m Model) handleCriticKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case matchesKey(msg, m.keys.PrevChange):
+		// Navigate to previous exchange
+		if m.criticIndex > 0 {
+			m.criticIndex--
+			m.criticScrollOffset = 0
+		}
+
+	case matchesKey(msg, m.keys.NextChange):
+		// Navigate to next exchange
+		if m.criticIndex < len(m.criticEntries)-1 {
+			m.criticIndex++
+			m.criticScrollOffset = 0
+		}
+
+	case matchesKey(msg, m.keys.ScrollUp):
+		if m.criticScrollOffset > 0 {
+			m.criticScrollOffset--
+		}
+
+	case matchesKey(msg, m.keys.ScrollDown):
+		m.criticScrollOffset++
+
+	case matchesKey(msg, m.keys.PageUp):
+		contentHeight := m.height - 4
+		m.criticScrollOffset -= contentHeight
+		if m.criticScrollOffset < 0 {
+			m.criticScrollOffset = 0
+		}
+
+	case matchesKey(msg, m.keys.PageDown):
+		contentHeight := m.height - 4
+		m.criticScrollOffset += contentHeight
+
+	case matchesKey(msg, m.keys.Top):
+		m.criticScrollOffset = 0
+
+	case matchesKey(msg, m.keys.Bottom):
+		m.criticScrollOffset = 99999
+
+	case matchesKey(msg, m.keys.Live):
+		// Jump to newest exchange
+		if len(m.criticEntries) > 0 {
+			m.criticIndex = len(m.criticEntries) - 1
+			m.criticScrollOffset = 0
+		}
 	}
 
 	return m, nil

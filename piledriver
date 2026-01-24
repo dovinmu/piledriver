@@ -9,17 +9,43 @@ import argparse
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Directory names (prefer non-dot, but support legacy .piledriver)
-PILEDRIVER_DIR = "piledriver"
-PILEDRIVER_DIR_LEGACY = ".piledriver"
+# Directory names (prefer .piledriver hidden, support legacy piledriver/)
+PILEDRIVER_DIR = ".piledriver"
+PILEDRIVER_DIR_LEGACY = "piledriver"
 
 # Phase constants (IDLE removed - sessions start in RECONNAISSANCE or SCOPING)
 PHASES = ["RECONNAISSANCE", "SCOPING", "ASSUMPTIONS", "VERIFICATION", "REPORT"]
+
+# Default critic command
+DEFAULT_CRITIC_COMMAND = "gemini -p"
+
+# Critic prompt template
+CRITIC_PROMPT_TEMPLATE = """You are the critic agent for a Piledriver bug-hunting session.
+Current phase: {phase}
+Session: {session}
+
+Your job is to decide when we're ready to move to the next phase.
+You should be satisfied that we have found a good match for our
+toolkit or if we should look elsewhere. Keep in mind that the
+investigation can lead to a null result (unable to find real
+impactful bugs).
+
+If you don't know something, don't ask about it - make the call
+yourself. Try to assist the worker agent while raising the quality bar.
+
+You have a maximum of 2-3 response rounds before we move to the
+next phase regardless.
+
+Here is the worker agent's current state:
+---
+{context}
+"""
 
 
 # === State file management ===
@@ -84,6 +110,18 @@ def transition_phase(session_dir: Path, new_phase: str) -> bool:
     if state is None:
         return False
 
+    old_phase = state.get("current_phase", "")
+
+    # Clean up _tlc_out when leaving VERIFICATION (can be huge)
+    if old_phase == "VERIFICATION" and new_phase != "VERIFICATION":
+        tlc_out = session_dir / "_tlc_out"
+        if tlc_out.exists():
+            try:
+                shutil.rmtree(tlc_out)
+                print(f"Cleaned up _tlc_out directory")
+            except Exception as e:
+                print(f"Warning: Could not clean up _tlc_out: {e}")
+
     state["current_phase"] = new_phase
     state["phase_history"].append({
         "phase": new_phase,
@@ -92,6 +130,60 @@ def transition_phase(session_dir: Path, new_phase: str) -> bool:
 
     write_state(session_dir, state)
     return True
+
+# === Config file management ===
+
+def load_config(piledriver_dir: Path) -> dict:
+    """Load config.yaml from piledriver directory."""
+    config_file = piledriver_dir / "config.yaml"
+    config = {
+        "critic_command": DEFAULT_CRITIC_COMMAND,
+    }
+
+    if not config_file.exists():
+        return config
+
+    try:
+        content = config_file.read_text()
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if ":" in stripped:
+                key, _, value = stripped.partition(":")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key in config:
+                    config[key] = value
+    except Exception:
+        pass  # Use defaults on error
+
+    return config
+
+
+def save_config(piledriver_dir: Path, config: dict) -> None:
+    """Save config.yaml to piledriver directory."""
+    config_file = piledriver_dir / "config.yaml"
+    lines = ["# Piledriver configuration"]
+    for key, value in config.items():
+        lines.append(f'{key}: "{value}"')
+    config_file.write_text("\n".join(lines) + "\n")
+
+
+# === Critic log management ===
+
+def append_critic_log(session_dir: Path, phase: str, worker_message: str, critic_response: str) -> None:
+    """Append a critic exchange to the session's critic log."""
+    log_file = session_dir / "critic_log.jsonl"
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        "phase": phase,
+        "worker_message": worker_message,
+        "critic_response": critic_response,
+    }
+    with open(log_file, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
 
 # === Phase validation ===
 
@@ -494,7 +586,7 @@ GUIDANCE = {
     "init": {
         "summary": "Session '{session}' initialized in {phase} phase.",
         "next_steps": [
-            "Edit `piledriver/{session}/reconnaissance.md` to run automated analysis:",
+            "Edit `.piledriver/{session}/reconnaissance.md` to run automated analysis:",
             "  - Race detectors (go test -race, cargo test, etc.)",
             "  - Static analyzers (staticcheck, clippy, ruff)",
             "  - Pattern searches for known bug signatures",
@@ -506,7 +598,7 @@ GUIDANCE = {
     "init:scoping": {
         "summary": "Session '{session}' initialized in SCOPING phase (skipped reconnaissance).",
         "next_steps": [
-            "Edit `piledriver/{session}/boundary.md` to define:",
+            "Edit `.piledriver/{session}/boundary.md` to define:",
             "  - The suspected bug (Suspect section)",
             "  - Components to verify (Inside section)",
             "  - Components to treat as black boxes (Outside section)",
@@ -518,7 +610,7 @@ GUIDANCE = {
     "set-phase:RECONNAISSANCE": {
         "summary": "Entered RECONNAISSANCE phase.",
         "next_steps": [
-            "Complete `piledriver/{session}/reconnaissance.md`:",
+            "Complete `.piledriver/{session}/reconnaissance.md`:",
             "  - Run race detectors and static analyzers",
             "  - Search for known bug patterns (TOCTOU, double-check locking, etc.)",
             "  - Rank suspects by likelihood and severity",
@@ -530,7 +622,7 @@ GUIDANCE = {
     "set-phase:SCOPING": {
         "summary": "Entered SCOPING phase.",
         "next_steps": [
-            "Complete `piledriver/{session}/boundary.md`:",
+            "Complete `.piledriver/{session}/boundary.md`:",
             "  - Document the suspect (what bug are we hunting?)",
             "  - List what's INSIDE (components to verify)",
             "  - List what's OUTSIDE (black boxes with assumptions)",
@@ -543,7 +635,7 @@ GUIDANCE = {
     "set-phase:ASSUMPTIONS": {
         "summary": "Entered ASSUMPTIONS phase.",
         "next_steps": [
-            "Complete `piledriver/{session}/assumptions.md`:",
+            "Complete `.piledriver/{session}/assumptions.md`:",
             "  - For EACH interface point, document what you assume about the outside",
             "  - Source your beliefs ('Code inspection of X shows...')",
             "  - Mark risk level (LOW/MEDIUM/HIGH)",
@@ -573,12 +665,15 @@ GUIDANCE = {
             "  - boundary.md: Does it still reflect what was actually verified?",
             "  - assumptions.md: Were any assumptions validated or invalidated?",
             "  - model.tla: Add comments explaining what the model proves",
-            "Create `piledriver/{session}/report.md` with:",
-            "  - Summary of what was investigated",
-            "  - Verification results and their interpretation",
-            "  - Bug relevance: When would this happen in production?",
-            "  - Assumption analysis: Which assumptions were validated/violated?",
-            "  - Recommendations for fixes",
+            "Create `.piledriver/{session}/report.md` with MULTI-AUDIENCE sections:",
+            "  - **For non-technical decision-makers**: Why does this matter?",
+            "  - **For technical leadership**: Where does this stand in the pantheon of bugs?",
+            "  - **For users of this software**: Where might this appear in real-world use?",
+            "  - **For the engineer fixing this**: Detailed technical breakdown and fix guidance",
+            "Include MULTI-LEVEL explanations (3 levels minimum):",
+            "  - Layperson summary (1-2 sentences)",
+            "  - Technical overview (for engineers unfamiliar with codebase)",
+            "  - Expert deep-dive (for engineers who will fix this)",
             "Create reproducers: `piledriver bug {session} <bug-name>`",
             "Generate PR draft: `piledriver pr {session}`",
         ],
@@ -624,14 +719,14 @@ GUIDANCE = {
     "check:syntax_error": {
         "summary": "SANY found syntax errors in the TLA+ specification.",
         "next_steps": [
-            "Fix syntax errors in `piledriver/{session}/model.tla`",
+            "Fix syntax errors in `.piledriver/{session}/model.tla`",
             "Re-run syntax check: `piledriver check {session} --sany`",
             "Common issues: missing operators, unbalanced parens, invalid identifiers",
         ],
         "reminder": "TLA+ is whitespace-sensitive. Check indentation in multi-line expressions."
     },
     "pr": {
-        "summary": "PR draft generated at `piledriver/{session}/pr-draft.md`.",
+        "summary": "PR draft generated at `.piledriver/{session}/pr-draft.md`.",
         "next_steps": [
             "Review and edit the PR draft",
             "Ensure reproducers pass: `piledriver test {session}`",
@@ -694,20 +789,69 @@ def format_guidance(template_key: str, **kwargs) -> str:
     return "\n".join(lines)
 
 
-def get_piledriver_root() -> Path:
-    """Find the piledriver directory, searching upward from cwd.
+def find_repo_root() -> Path | None:
+    """Find the git repository root by searching upward from cwd.
 
-    Supports both 'piledriver/' (preferred) and '.piledriver/' (legacy).
+    Returns the directory containing .git, or None if not in a git repo.
     """
     cwd = Path.cwd()
     for parent in [cwd] + list(cwd.parents):
-        # Prefer non-dot directory
-        if (parent / PILEDRIVER_DIR).exists():
-            return parent / PILEDRIVER_DIR
-        # Fall back to legacy .piledriver
-        if (parent / PILEDRIVER_DIR_LEGACY).exists():
-            return parent / PILEDRIVER_DIR_LEGACY
-    # Default to non-dot for new projects
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def is_piledriver_dir(path: Path) -> bool:
+    """Check if a directory is actually a piledriver session directory.
+
+    Distinguishes piledriver directories from git repos that happen to be
+    named 'piledriver/' by checking for session indicators.
+    """
+    if not path.exists() or not path.is_dir():
+        return False
+
+    # If it's a git repo, it's not a piledriver directory
+    if (path / ".git").exists():
+        return False
+
+    # Check for session indicators: subdirs with state.json
+    try:
+        for item in path.iterdir():
+            if item.is_dir() and (item / "state.json").exists():
+                return True
+    except PermissionError:
+        pass
+
+    # Empty piledriver dir is still valid (newly created)
+    # But only if parent has .git (it's in a repo)
+    parent = path.parent
+    if (parent / ".git").exists():
+        return True
+
+    return False
+
+
+def get_piledriver_root() -> Path:
+    """Find the piledriver directory, searching upward from cwd.
+
+    Supports both '.piledriver/' (preferred) and 'piledriver/' (legacy).
+    For new projects, creates in the git repo root (not cwd).
+    """
+    cwd = Path.cwd()
+    for parent in [cwd] + list(cwd.parents):
+        # Prefer .piledriver directory
+        piledriver_path = parent / PILEDRIVER_DIR
+        if is_piledriver_dir(piledriver_path):
+            return piledriver_path
+        # Fall back to legacy piledriver/
+        legacy_path = parent / PILEDRIVER_DIR_LEGACY
+        if is_piledriver_dir(legacy_path):
+            return legacy_path
+
+    # No existing dir found - default to repo root (or cwd if not in a repo)
+    repo_root = find_repo_root()
+    if repo_root:
+        return repo_root / PILEDRIVER_DIR
     return cwd / PILEDRIVER_DIR
 
 
@@ -758,10 +902,15 @@ def cmd_init(args):
         print(f"Error: {error}")
         return 1
 
-    # Check for existing piledriver dir (prefer existing, create new as non-dot)
+    # Check for existing piledriver dir (prefer existing, create new in repo root)
     piledriver_dir = get_piledriver_root()
     if not piledriver_dir.exists():
-        piledriver_dir = Path.cwd() / PILEDRIVER_DIR
+        # Create in repo root if we're in a git repo, otherwise cwd
+        repo_root = find_repo_root()
+        if repo_root:
+            piledriver_dir = repo_root / PILEDRIVER_DIR
+        else:
+            piledriver_dir = Path.cwd() / PILEDRIVER_DIR
 
     session_dir = piledriver_dir / session_name
 
@@ -1901,6 +2050,85 @@ def cmd_summary(args):
     return 0
 
 
+def cmd_critique(args):
+    """Send context to the critic agent and get feedback."""
+    session_name = args.session_name
+    context = args.context
+
+    piledriver_dir = get_piledriver_root()
+    session_dir = piledriver_dir / session_name
+
+    if not session_dir.exists():
+        print(f"Error: Session '{session_name}' does not exist.")
+        return 1
+
+    state = read_state(session_dir)
+    if not state:
+        print(f"Error: No state.json found for session '{session_name}'")
+        return 1
+
+    current_phase = state.get("current_phase", "UNKNOWN")
+
+    # Load config for critic command
+    config = load_config(piledriver_dir)
+    critic_command = config.get("critic_command", DEFAULT_CRITIC_COMMAND)
+
+    # Build the full prompt
+    full_prompt = CRITIC_PROMPT_TEMPLATE.format(
+        phase=current_phase,
+        session=session_name,
+        context=context
+    )
+
+    # Parse the critic command (e.g., "gemini -p" -> ["gemini", "-p"])
+    cmd_parts = critic_command.split()
+    if not cmd_parts:
+        print(f"Error: Invalid critic_command in config: '{critic_command}'")
+        return 1
+
+    # Append the prompt as the final argument
+    cmd = cmd_parts + [full_prompt]
+
+    print(f"Invoking critic: {cmd_parts[0]}...")
+    print("-" * 60)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        response = result.stdout.strip()
+        if result.stderr:
+            response += "\n" + result.stderr.strip()
+
+        if not response:
+            print("(No response from critic)")
+            return 1
+
+        print(response)
+
+    except subprocess.TimeoutExpired:
+        print("Error: Critic timed out after 5 minutes")
+        return 1
+    except FileNotFoundError:
+        print(f"Error: Critic command not found: {cmd_parts[0]}")
+        print(f"Configure with: echo 'critic_command: \"your-command\"' >> {piledriver_dir}/config.yaml")
+        return 1
+    except Exception as e:
+        print(f"Error running critic: {e}")
+        return 1
+
+    print("-" * 60)
+
+    # Log the exchange
+    append_critic_log(session_dir, current_phase, context, response)
+    print(f"(Exchange logged to .piledriver/{session_name}/critic_log.jsonl)")
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Piledriver: TLA+ Bug Hunter CLI",
@@ -1914,6 +2142,7 @@ Commands:
   status [session]            Show current state
   check <session>             Run TLC model checker
   pr <session>                Generate PR draft from report
+  critique <session> <context> Send context to critic agent for feedback
 
 Examples:
   piledriver init hugot-usage
@@ -1922,6 +2151,7 @@ Examples:
   piledriver test hugot-usage
   piledriver check hugot-usage
   piledriver pr hugot-usage
+  piledriver critique hugot-usage "Here's my current analysis..."
   piledriver status
 """
     )
@@ -1974,6 +2204,11 @@ Examples:
     summary_parser.add_argument("session_name", help="Session to configure")
     summary_parser.add_argument("summary", nargs="?", help="Summary text (view if not provided)")
 
+    # critique command
+    critique_parser = subparsers.add_parser("critique", help="Send context to critic agent for feedback")
+    critique_parser.add_argument("session_name", help="Session to critique")
+    critique_parser.add_argument("context", help="Context/state to send to the critic")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -1998,6 +2233,8 @@ Examples:
         return cmd_technique(args)
     elif args.command == "summary":
         return cmd_summary(args)
+    elif args.command == "critique":
+        return cmd_critique(args)
     else:
         parser.print_help()
         return 1

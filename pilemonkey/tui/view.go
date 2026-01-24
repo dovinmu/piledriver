@@ -60,10 +60,14 @@ func renderView(m Model) string {
 	}
 
 	// Dispatch based on view mode
-	if m.viewMode == ViewModeOverview {
+	switch m.viewMode {
+	case ViewModeOverview:
 		return renderOverview(m)
+	case ViewModeCritic:
+		return renderCriticView(m)
+	default:
+		return renderDiffView(m)
 	}
-	return renderDiffView(m)
 }
 
 func renderDiffView(m Model) string {
@@ -224,6 +228,6 @@ func renderDiffLine(line store.DiffLine, width int, filename string) string {
 }
 
 func renderDiffFooter(m Model) string {
-	help := "Tab overview   ◀ ▶ changes   ▲ ▼ scroll   L live   q quit"
+	help := "Tab next view   ◀ ▶ changes   ▲ ▼ scroll   L live   q quit"
 	return footerStyle.Width(m.width).Render(help)
 }
