@@ -868,6 +868,51 @@ def validate_session_name(name: str) -> tuple:
     return True, ""
 
 
+def get_default_session() -> str | None:
+    """Get default session name if exactly one session exists."""
+    piledriver_dir = get_piledriver_root()
+    if not piledriver_dir.exists():
+        return None
+
+    sessions = [
+        d.name for d in piledriver_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".") and (d / "state.json").exists()
+    ]
+
+    if len(sessions) == 1:
+        return sessions[0]
+    return None
+
+
+def resolve_session(session_name: str | None, command: str) -> str | None:
+    """Resolve session name, using default if not provided. Returns None on error (after printing)."""
+    if session_name:
+        return session_name
+
+    default = get_default_session()
+    if default:
+        return default
+
+    # No default available - print helpful error
+    piledriver_dir = get_piledriver_root()
+    if not piledriver_dir.exists():
+        print(f"Error: No piledriver directory found.")
+        print(f"Run 'piledriver init <session_name>' to start.")
+    else:
+        sessions = [
+            d.name for d in piledriver_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ]
+        if not sessions:
+            print(f"Error: No sessions found.")
+            print(f"Run 'piledriver init <session_name>' to start.")
+        else:
+            print(f"Error: Multiple sessions exist. Specify one:")
+            for s in sorted(sessions):
+                print(f"  piledriver {command} {s}")
+    return None
+
+
 def add_to_git_exclude(piledriver_dir: Path):
     """Add piledriver directory to .git/info/exclude if not already present."""
     git_dir = piledriver_dir.parent / ".git"
@@ -1578,7 +1623,9 @@ def parse_tlc_output(output: str) -> dict:
 
 def cmd_check(args):
     """Run TLC model checker on session spec."""
-    session_name = args.session_name
+    session_name = resolve_session(getattr(args, 'session_name', None), "check")
+    if not session_name:
+        return 1
     sany_only = getattr(args, 'sany', False)
 
     piledriver_dir = get_piledriver_root()
@@ -1607,6 +1654,20 @@ def cmd_check(args):
     # Create output directory
     tlc_out = session_dir / "_tlc_out"
     tlc_out.mkdir(exist_ok=True)
+
+    # Check for java (macOS has a stub that prompts to install, so verify it works)
+    try:
+        result = subprocess.run(["java", "-version"], capture_output=True, text=True, timeout=5)
+        if "version" not in result.stderr.lower() and "version" not in result.stdout.lower():
+            raise FileNotFoundError("java stub")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("Error: Java not found or not working")
+        print("Install Java (JRE 11+):")
+        print("  macOS:  brew install openjdk@17")
+        print("  Ubuntu: sudo apt install openjdk-17-jre")
+        print()
+        print("Or run: ./tools/setup.sh")
+        return 1
 
     # Build command
     if sany_only:
@@ -2186,7 +2247,7 @@ Examples:
 
     # check command
     check_parser = subparsers.add_parser("check", help="Run TLC model checker")
-    check_parser.add_argument("session_name", help="Session to check")
+    check_parser.add_argument("session_name", nargs="?", help="Session to check (auto-detected if only one)")
     check_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
 
     # pr command
