@@ -28,6 +28,16 @@ type StateUpdateMsg struct {
 	SessionInfo *state.SessionInfo
 }
 
+// ConversationSummaryMsg is sent when the conversation summary is updated
+type ConversationSummaryMsg struct {
+	Summary string
+}
+
+// SessionTitleMsg is sent when the session title is read
+type SessionTitleMsg struct {
+	Title string
+}
+
 // Model represents the TUI state
 type Model struct {
 	// Diff mode state
@@ -56,6 +66,10 @@ type Model struct {
 	height  int
 	keys    KeyMap
 	rootDir string
+
+	// Conversation summarizer state
+	conversationSummary string
+	sessionTitle        string // Built-in summary from JSONL
 }
 
 // NewModel creates a new TUI model
@@ -65,7 +79,7 @@ func NewModel(s *store.Store, rootDir string) Model {
 		currentIndex: -1, // Will be set to newest on first changeset
 		scrollOffset: 0,
 		liveMode:     true,
-		viewMode:     ViewModeDiff,
+		viewMode:     ViewModeOverview,
 		viewingPhase: state.PhaseReconnaissance,
 		keys:         DefaultKeyMap(),
 		rootDir:      rootDir,
@@ -115,6 +129,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewingPhase = normalizedCurrent
 			}
 		}
+		return m, nil
+
+	case ConversationSummaryMsg:
+		// Conversation summary was updated
+		m.conversationSummary = msg.Summary
+		return m, nil
+
+	case SessionTitleMsg:
+		// Session title was read
+		m.sessionTitle = msg.Title
 		return m, nil
 	}
 

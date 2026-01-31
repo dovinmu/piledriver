@@ -66,6 +66,16 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#ff79c6")).
 			Padding(0, 1)
+
+	// Column styles for two-column layout
+	leftColumnStyle = lipgloss.NewStyle().
+			PaddingRight(2)
+
+	rightColumnStyle = lipgloss.NewStyle().
+				PaddingLeft(2)
+
+	summaryTextStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#f8f8f2"))
 )
 
 func renderOverview(m Model) string {
@@ -112,6 +122,38 @@ func renderOverviewHeader(m Model) string {
 }
 
 func renderOverviewContent(m Model, height int) string {
+	// Determine column widths
+	// If we have a conversation summary, use two-column layout
+	// Otherwise, use single column
+	hasSummary := m.conversationSummary != ""
+
+	if hasSummary && m.width > 80 {
+		// Two-column layout
+		rightWidth := m.width / 3
+		if rightWidth < 30 {
+			rightWidth = 30
+		}
+		if rightWidth > 50 {
+			rightWidth = 50
+		}
+		leftWidth := m.width - rightWidth - 2 // Account for padding
+
+		leftContent := renderLeftColumn(m, leftWidth, height)
+		rightContent := renderRightColumn(m, rightWidth-2, height) // -2 for padding
+
+		// Style the columns
+		left := leftColumnStyle.Width(leftWidth).Height(height).Render(leftContent)
+		right := rightColumnStyle.Width(rightWidth).Height(height).Render(rightContent)
+
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n"
+	}
+
+	// Single column layout (no summary or narrow terminal)
+	return renderLeftColumn(m, m.width, height) + "\n"
+}
+
+// renderLeftColumn renders the main piledriver session info
+func renderLeftColumn(m Model, width int, height int) string {
 	var lines []string
 
 	lines = append(lines, "")
@@ -120,9 +162,10 @@ func renderOverviewContent(m Model, height int) string {
 	if m.sessionInfo != nil && m.sessionInfo.State != nil && m.sessionInfo.State.Summary != "" {
 		lines = append(lines, sectionTitleStyle.Render("  Task Summary"))
 		lines = append(lines, "")
-		// Wrap summary to width, indent
-		summary := "    " + m.sessionInfo.State.Summary
-		lines = append(lines, summary)
+		summary := wrapText(m.sessionInfo.State.Summary, width-6)
+		for _, line := range strings.Split(summary, "\n") {
+			lines = append(lines, "    "+line)
+		}
 		lines = append(lines, "")
 	}
 
@@ -153,7 +196,7 @@ func renderOverviewContent(m Model, height int) string {
 	// Notes section
 	lines = append(lines, sectionTitleStyle.Render(fmt.Sprintf("  Notes for %s", m.viewingPhase)))
 	lines = append(lines, "")
-	lines = append(lines, renderNotes(m)...)
+	lines = append(lines, renderNotes(m, width)...)
 	lines = append(lines, "")
 
 	// Pad to fill height
@@ -161,7 +204,85 @@ func renderOverviewContent(m Model, height int) string {
 		lines = append(lines, "")
 	}
 
-	return strings.Join(lines[:height], "\n") + "\n"
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderRightColumn renders the Claude activity summary
+func renderRightColumn(m Model, width int, height int) string {
+	var lines []string
+
+	// Use session title as header, or fallback to "Claude Activity"
+	header := "Claude Activity"
+	if m.sessionTitle != "" {
+		header = m.sessionTitle
+	}
+	// Word wrap the header if needed
+	wrappedHeader := wrapText(header, width)
+	for _, line := range strings.Split(wrappedHeader, "\n") {
+		lines = append(lines, sectionTitleStyle.Render(line))
+	}
+	lines = append(lines, "")
+
+	if m.conversationSummary == "" {
+		lines = append(lines, emptyStyle.Render("Waiting for activity..."))
+	} else {
+		// Word wrap the summary
+		wrapped := wrapText(m.conversationSummary, width)
+		for _, line := range strings.Split(wrapped, "\n") {
+			lines = append(lines, summaryTextStyle.Render(line))
+		}
+	}
+
+	// Pad to fill height
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// wrapText wraps text to fit within the specified width
+func wrapText(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+
+	var result strings.Builder
+	words := strings.Fields(text)
+	lineLen := 0
+
+	for i, word := range words {
+		wordLen := len(word)
+
+		if lineLen+wordLen+1 > width && lineLen > 0 {
+			result.WriteString("\n")
+			lineLen = 0
+		}
+
+		if lineLen > 0 {
+			result.WriteString(" ")
+			lineLen++
+		}
+
+		result.WriteString(word)
+		lineLen += wordLen
+
+		// Check if this is the last word
+		if i < len(words)-1 && lineLen >= width {
+			result.WriteString("\n")
+			lineLen = 0
+		}
+	}
+
+	return result.String()
 }
 
 func renderPhaseProgress(m Model) []string {
@@ -342,9 +463,9 @@ func renderTLCStatus(m Model) string {
 	return "    " + status
 }
 
-func renderNotes(m Model) []string {
+func renderNotes(m Model, width int) []string {
 	if m.editingNote {
-		return renderNoteInput(m)
+		return renderNoteInput(m, width)
 	}
 
 	var note string
@@ -360,7 +481,11 @@ func renderNotes(m Model) []string {
 	}
 
 	// Wrap note in a box
-	boxContent := noteBoxStyle.Width(m.width - 8).Render(note)
+	boxWidth := width - 8
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+	boxContent := noteBoxStyle.Width(boxWidth).Render(note)
 	lines := strings.Split(boxContent, "\n")
 	var result []string
 	for _, line := range lines {
@@ -369,7 +494,7 @@ func renderNotes(m Model) []string {
 	return result
 }
 
-func renderNoteInput(m Model) []string {
+func renderNoteInput(m Model, width int) []string {
 	// Show input with cursor
 	inputText := m.noteInput
 	if m.noteInputPos >= 0 && m.noteInputPos <= len(inputText) {
@@ -386,7 +511,11 @@ func renderNoteInput(m Model) []string {
 		inputText = "│"
 	}
 
-	boxContent := inputBoxStyle.Width(m.width - 8).Render(inputText)
+	boxWidth := width - 8
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+	boxContent := inputBoxStyle.Width(boxWidth).Render(inputText)
 	lines := strings.Split(boxContent, "\n")
 	var result []string
 	for _, line := range lines {
