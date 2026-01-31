@@ -226,7 +226,6 @@ func renderFileChecklist(m Model) []string {
 			{"boundary.md", m.sessionInfo.Files.Boundary},
 			{"assumptions.md", m.sessionInfo.Files.Assumptions},
 			{"model.tla", m.sessionInfo.Files.ModelTLA},
-			{"model.cfg", m.sessionInfo.Files.ModelCfg},
 			{"probe.md", m.sessionInfo.Files.Probe},
 		}
 	} else {
@@ -235,7 +234,6 @@ func renderFileChecklist(m Model) []string {
 			{"boundary.md", state.FileMissing},
 			{"assumptions.md", state.FileMissing},
 			{"model.tla", state.FileMissing},
-			{"model.cfg", state.FileMissing},
 			{"probe.md", state.FileMissing},
 		}
 	}
@@ -261,6 +259,15 @@ func renderFileChecklist(m Model) []string {
 			line2Parts = append(line2Parts, styled)
 		}
 	}
+
+	// Add cfg files indicator
+	var cfgInfo string
+	if m.sessionInfo != nil && len(m.sessionInfo.Files.CfgFiles) > 0 {
+		cfgInfo = fileFilledStyle.Render(fmt.Sprintf("✓ %d .cfg", len(m.sessionInfo.Files.CfgFiles)))
+	} else {
+		cfgInfo = fileMissingStyle.Render("○ .cfg")
+	}
+	line2Parts = append(line2Parts, cfgInfo)
 
 	return []string{
 		"    " + strings.Join(line1Parts, "   "),
@@ -394,7 +401,7 @@ func renderOverviewFooter(m Model) string {
 	if m.editingNote {
 		help = "Enter save   Esc cancel"
 	} else {
-		help = "Tab diff   ◀ ▶ phases   n note   q quit"
+		help = "Tab next view   ◀ ▶ phases   n note   q quit"
 	}
 	return footerStyle.Width(m.width).Render(help)
 }

@@ -181,3 +181,56 @@ func (s *SessionState) LatestTLCResult() *TLCResult {
 	}
 	return &s.TLCResults[len(s.TLCResults)-1]
 }
+
+// CriticEntry represents a single critic exchange
+type CriticEntry struct {
+	Timestamp      time.Time `json:"timestamp"`
+	Phase          string    `json:"phase"`
+	WorkerMessage  string    `json:"worker_message"`
+	CriticResponse string    `json:"critic_response"`
+}
+
+// LoadCriticLog reads the critic log from a session directory
+// Returns an empty slice if the file doesn't exist
+func LoadCriticLog(sessionDir string) ([]CriticEntry, error) {
+	path := filepath.Join(sessionDir, "critic_log.jsonl")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []CriticEntry{}, nil
+		}
+		return nil, err
+	}
+
+	var entries []CriticEntry
+	// Split by newlines and parse each line
+	for _, line := range splitLines(string(data)) {
+		if line == "" {
+			continue
+		}
+		var entry CriticEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue // Skip malformed lines
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
+// splitLines splits a string by newlines
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
+}

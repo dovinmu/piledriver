@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// Directory names (prefer non-dot, support legacy)
-const PiledriverDir = "piledriver"
-const PiledriverDirLegacy = ".piledriver"
+// Directory names (prefer .piledriver hidden, support legacy piledriver/)
+const PiledriverDir = ".piledriver"
+const PiledriverDirLegacy = "piledriver"
 
 // FileStatus represents the state of a session file
 type FileStatus int
@@ -27,7 +27,7 @@ type SessionFiles struct {
 	Boundary       FileStatus
 	Assumptions    FileStatus
 	ModelTLA       FileStatus
-	ModelCfg       FileStatus
+	CfgFiles       []string // List of .cfg files (any name)
 	Probe          FileStatus
 }
 
@@ -50,8 +50,46 @@ type SessionInfo struct {
 	State       *SessionState
 }
 
+// isPiledriverDir checks if a directory is actually a piledriver session directory.
+// Distinguishes piledriver directories from git repos named 'piledriver/'.
+func isPiledriverDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	// If it's a git repo, it's not a piledriver directory
+	gitPath := filepath.Join(path, ".git")
+	if _, err := os.Stat(gitPath); err == nil {
+		return false
+	}
+
+	// Check for session indicators: subdirs with state.json
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			statePath := filepath.Join(path, entry.Name(), "state.json")
+			if _, err := os.Stat(statePath); err == nil {
+				return true
+			}
+		}
+	}
+
+	// Empty piledriver dir is still valid if parent has .git
+	parentGit := filepath.Join(filepath.Dir(path), ".git")
+	if _, err := os.Stat(parentGit); err == nil {
+		return true
+	}
+
+	return false
+}
+
 // FindPiledriverDir searches upward from dir for piledriver directory
-// Supports both 'piledriver/' (preferred) and '.piledriver/' (legacy)
+// Supports both '.piledriver/' (preferred) and 'piledriver/' (legacy)
 func FindPiledriverDir(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -59,15 +97,15 @@ func FindPiledriverDir(startDir string) (string, error) {
 	}
 
 	for {
-		// Prefer non-dot directory
+		// Prefer .piledriver directory
 		pdDir := filepath.Join(dir, PiledriverDir)
-		if info, err := os.Stat(pdDir); err == nil && info.IsDir() {
+		if isPiledriverDir(pdDir) {
 			return pdDir, nil
 		}
 
-		// Fall back to legacy .piledriver
+		// Fall back to legacy piledriver/
 		pdDirLegacy := filepath.Join(dir, PiledriverDirLegacy)
-		if info, err := os.Stat(pdDirLegacy); err == nil && info.IsDir() {
+		if isPiledriverDir(pdDirLegacy) {
 			return pdDirLegacy, nil
 		}
 
@@ -197,14 +235,25 @@ func getFileStatus(sessionDir, name string) FileStatus {
 
 // GetSessionFiles checks which standard files exist in a session and their status
 func GetSessionFiles(sessionDir string) SessionFiles {
-	return SessionFiles{
+	files := SessionFiles{
 		Reconnaissance: getFileStatus(sessionDir, "reconnaissance.md"),
 		Boundary:       getFileStatus(sessionDir, "boundary.md"),
 		Assumptions:    getFileStatus(sessionDir, "assumptions.md"),
 		ModelTLA:       getFileStatus(sessionDir, "model.tla"),
-		ModelCfg:       getFileStatus(sessionDir, "model.cfg"),
 		Probe:          getFileStatus(sessionDir, "probe.md"),
 	}
+
+	// Find all .cfg files
+	entries, err := os.ReadDir(sessionDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".cfg") {
+				files.CfgFiles = append(files.CfgFiles, entry.Name())
+			}
+		}
+	}
+
+	return files
 }
 
 // GetReproducers returns the status of all reproducers in a session

@@ -112,10 +112,10 @@ cp completions/piledriver.fish ~/.config/fish/completions/
 ## Requirements
 
 - Python 3
-- Java (JRE 11+) or Nix
+- Java (JRE 11+) - `brew install openjdk@17` on macOS
 - Claude Code
 
-The installer downloads `tla2tools.jar` automatically.
+Run `./tools/setup.sh` to check dependencies and download `tla2tools.jar`.
 
 ## Reproducer contract
 

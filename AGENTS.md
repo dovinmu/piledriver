@@ -22,7 +22,7 @@ This is NOT "spec then implement." This is "reverse engineer, verify, probe."
 | **SCOPING** | Define what's inside vs outside the verification boundary |
 | **ASSUMPTIONS** | Document assumptions about components outside the boundary |
 | **VERIFICATION** | Verify using appropriate technique (TLA+, property testing, fuzzing, etc.) |
-| **REPORT** | Synthesize findings, create reproducers |
+| **REPORT** | Synthesize findings for multiple audiences, create reproducers |
 
 Run `piledriver status` for current state. Run `piledriver set-phase <session> <phase>` to transition—the CLI will print detailed guidance for each phase.
 
@@ -45,6 +45,8 @@ piledriver bug <session> <bug>         # Create reproducer scaffold
 piledriver test <session> [bug]        # Run reproducer validation
 piledriver pr <session>                # Generate PR draft
 piledriver status [session]            # Show state + guidance
+piledriver summary <session> [text]    # View/set task summary
+piledriver critique <session> <context> # Get feedback from critic agent
 ```
 
 Session names must be lowercase.
@@ -96,3 +98,33 @@ Requirements:
 3. Base commit: test should FAIL (bug present)
 4. Fix commit: test should PASS (bug fixed)
 5. Test must be deterministic
+
+## Report Structure
+
+Reports in REPORT phase should explain findings to multiple audiences:
+
+**Multi-Audience Sections**:
+- **Non-technical decision-makers**: Why does this matter for the business/product?
+- **Technical leadership**: Where does this stand in the pantheon of tech problems?
+- **Users of this software**: Where might this appear in real-world use?
+- **Engineer fixing this**: Detailed technical breakdown and fix guidance
+
+**Multi-Level Explanations** (include at least 3 levels):
+1. Layperson summary (1-2 sentences anyone can understand)
+2. Technical overview (for engineers unfamiliar with codebase)
+3. Expert deep-dive (for engineers who will implement the fix)
+
+## Critic Agent
+
+Use `piledriver critique <session> "<context>"` to get feedback from a critic agent (default: Gemini).
+
+The critic helps:
+- Decide when to advance to the next phase
+- Identify gaps in analysis
+- Maintain quality bar
+- Validate that null results are OK (not every investigation finds bugs)
+
+Configure the critic command in `.piledriver/config.yaml`:
+```yaml
+critic_command: "gemini -p"  # or "gpt -p", "claude -p", etc.
+```
