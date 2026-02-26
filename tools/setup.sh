@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 # Piledriver setup: checks dependencies and downloads tools
@@ -40,7 +40,7 @@ download_tla2tools() {
     fi
 
     echo "Downloading tla2tools.jar v${TLA_VERSION}..."
-    if curl -L -o "$JAR_PATH" "$TLA_URL"; then
+    if curl --fail -L -o "$JAR_PATH" "$TLA_URL"; then
         echo "[OK] Downloaded tla2tools.jar"
         return 0
     else
