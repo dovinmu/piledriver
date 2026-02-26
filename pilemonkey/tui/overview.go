@@ -162,8 +162,7 @@ func renderLeftColumn(m Model, width int, height int) string {
 	if m.sessionInfo != nil && m.sessionInfo.State != nil && m.sessionInfo.State.Summary != "" {
 		lines = append(lines, sectionTitleStyle.Render("  Task Summary"))
 		lines = append(lines, "")
-		summary := wrapText(m.sessionInfo.State.Summary, width-6)
-		for _, line := range strings.Split(summary, "\n") {
+		for _, line := range wrapText(m.sessionInfo.State.Summary, width-6) {
 			lines = append(lines, "    "+line)
 		}
 		lines = append(lines, "")
@@ -221,8 +220,7 @@ func renderRightColumn(m Model, width int, height int) string {
 		header = m.sessionTitle
 	}
 	// Word wrap the header if needed
-	wrappedHeader := wrapText(header, width)
-	for _, line := range strings.Split(wrappedHeader, "\n") {
+	for _, line := range wrapText(header, width) {
 		lines = append(lines, sectionTitleStyle.Render(line))
 	}
 	lines = append(lines, "")
@@ -231,8 +229,7 @@ func renderRightColumn(m Model, width int, height int) string {
 		lines = append(lines, emptyStyle.Render("Waiting for activity..."))
 	} else {
 		// Word wrap the summary
-		wrapped := wrapText(m.conversationSummary, width)
-		for _, line := range strings.Split(wrapped, "\n") {
+		for _, line := range wrapText(m.conversationSummary, width) {
 			lines = append(lines, summaryTextStyle.Render(line))
 		}
 	}
@@ -249,41 +246,6 @@ func renderRightColumn(m Model, width int, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-// wrapText wraps text to fit within the specified width
-func wrapText(text string, width int) string {
-	if width <= 0 {
-		return text
-	}
-
-	var result strings.Builder
-	words := strings.Fields(text)
-	lineLen := 0
-
-	for i, word := range words {
-		wordLen := len(word)
-
-		if lineLen+wordLen+1 > width && lineLen > 0 {
-			result.WriteString("\n")
-			lineLen = 0
-		}
-
-		if lineLen > 0 {
-			result.WriteString(" ")
-			lineLen++
-		}
-
-		result.WriteString(word)
-		lineLen += wordLen
-
-		// Check if this is the last word
-		if i < len(words)-1 && lineLen >= width {
-			result.WriteString("\n")
-			lineLen = 0
-		}
-	}
-
-	return result.String()
-}
 
 func renderPhaseProgress(m Model) []string {
 	phases := state.AllPhases()

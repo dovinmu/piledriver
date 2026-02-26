@@ -77,7 +77,7 @@ Point your agent at `AGENTS.md` in this repo for workflow instructions. The CLI 
 Run in a second terminal to watch the agent work:
 
 ```bash
-cd pilemonkey && go build && ./pilemonkey -s <session-name>
+cd pilemonkey && make && ./bin/pilemonkey -s <session-name>
 ```
 
 Shows phase progress, file changes, TLC results, and lets you add notes.
