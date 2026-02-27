@@ -1,6 +1,6 @@
 # Piledriver
 
-Bug hunting workflow using formal methods and verification techniques. Agent-agnostic — works with Claude Code, Gemini, Codex, or any AI coding assistant.
+Piledriver is a bug-hunting workflow for agents to produce high-quality, tested, and targeted fixes to your code base. It breaks a bug hunt into predefined stages and has the agent walk through those stages with the `piledriver` CLI: recon on the codebase given a general problem area, scoping and assumptions for drawing clear boundaries around the code we're working with, verification (TLA+ model checking, property testing, fuzzing, etc.), writing the bug fix using red/green test-driven methods, and writing a final report.
 
 - **piledriver** (Python CLI) - For agents. Scaffolds sessions, validates phase transitions, runs TLC.
 - **pilemonkey** (Go TUI) - For humans. Watch file changes and session progress in real-time.
@@ -11,26 +11,31 @@ Bug hunting workflow using formal methods and verification techniques. Agent-agn
 ./install.sh
 ```
 
-This downloads TLA+ tools and, if Claude Code is installed, creates the `/piledriver` slash command.
+This downloads TLA+ tools and, if Claude Code is installed, creates the `/piledriver` slash command for Claude Code by copying AGENTS.md.
 
 ## Usage
-
+### For the human
 From any project directory:
 
 ```
 /piledriver I think there's a race condition in the session manager
 ```
 
-Or use the CLI directly:
+If you're not using Claude Code or haven't installed Piledriver as a skill, just point your agent at the AGENTS.md file in this repo. To follow along at a high level with the current phase your agent is in and other status updates, build `pilemonkey` and run the binary from a second terminal in the same directory as Claude Code (currently only compatible with Claude Code). 
 
+### For the agent
+Your starting point is AGENTS.md, and your toolkit is the `piledriver` CLI. Here are the important commands you'll be using during the course of the workflow:
 ```bash
 piledriver init <session-name>              # Create session with scaffolding
 piledriver set-phase <session> <phase>      # Transition between phases
+piledriver technique <session> [type]       # View/set verification technique
+piledriver check <session-name> [--sany]    # Run TLC model checker
 piledriver bug <session-name> <bug-name>    # Create bug reproducer
 piledriver test <session-name> [bug-name]   # Run reproducer validation
-piledriver check <session-name> [--sany]    # Run TLC model checker
 piledriver pr <session-name>                # Generate PR draft
 piledriver status [session-name]            # Show session state
+piledriver summary <session> [text]         # View/set task summary
+piledriver critique <session> <context>     # Get feedback from critic agent (requires gemini CLI by default)
 ```
 
 Each command outputs guidance on next steps.
@@ -40,8 +45,9 @@ Each command outputs guidance on next steps.
 1. **Reconnaissance** (optional) - Cast a wide net with race detectors, static analyzers, pattern grep
 2. **Scoping** - Define what's formally modeled vs assumed correct
 3. **Assumptions** - Document what you assume about components outside the model
-4. **Verification** - Choose technique (TLA+, property testing, fuzzing, etc.) and verify
-5. **Report** - Document findings, create reproducers that fail before fix, pass after
+4. **Verification** - Write and run the verification (TLA+ has first-class support via `piledriver check`; other techniques are scaffolded and agent-driven)
+5. **Testing** - Red/green: commit a failing test that proves the bug, then commit the fix
+6. **Report** - Document findings for multiple audiences, generate PR draft
 
 ## Directory structure
 
@@ -120,7 +126,13 @@ cp completions/piledriver.fish ~/.config/fish/completions/
 
 Run `./tools/setup.sh` to check dependencies and download `tla2tools.jar`.
 
-If you use Nix, `nix develop` provides Java and wrapper scripts.
+## Configuration
+
+Optional. Create `.piledriver/config.yaml` to customize behavior:
+
+```yaml
+critic_command: "gemini -p"  # Command for `piledriver critique` (default: gemini -p)
+```
 
 ## Reproducer contract
 

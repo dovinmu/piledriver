@@ -11,7 +11,7 @@ This is NOT "spec then implement." This is "reverse engineer, verify, probe."
 ## Workflow
 
 ```
-(init) → RECONNAISSANCE ←→ SCOPING ←→ ASSUMPTIONS ←→ VERIFICATION → REPORT
+(init) → RECONNAISSANCE ←→ SCOPING ←→ ASSUMPTIONS ←→ VERIFICATION → TESTING → REPORT
               ↓ (skip)        ↑
               └───────────────┘
 ```
@@ -22,7 +22,8 @@ This is NOT "spec then implement." This is "reverse engineer, verify, probe."
 | **SCOPING** | Define what's inside vs outside the verification boundary |
 | **ASSUMPTIONS** | Document assumptions about components outside the boundary |
 | **VERIFICATION** | Verify using appropriate technique (TLA+, property testing, fuzzing, etc.) |
-| **REPORT** | Synthesize findings for multiple audiences, create reproducers |
+| **TESTING** | Red/green: commit a failing test that proves the bug, then commit the fix |
+| **REPORT** | Synthesize findings for multiple audiences |
 
 Run `piledriver status` for current state. Run `piledriver set-phase <session> <phase>` to transition—the CLI will print detailed guidance for each phase.
 
@@ -98,6 +99,27 @@ Requirements:
 3. Base commit: test should FAIL (bug present)
 4. Fix commit: test should PASS (bug fixed)
 5. Test must be deterministic
+
+## Testing Phase: Red/Green Workflow
+
+After verification identifies a bug, prove it's real with two commits:
+
+**Commit 1 — Red (test only):**
+1. `piledriver bug <session> <bug-name>` to scaffold the reproducer
+2. Write `reproduce.sh` — a test that exposes the bug
+3. Fill in `base_commit` in `scenario.yaml` (current HEAD)
+4. Commit ONLY the test. Do not include any fix.
+5. `piledriver test <session>` — confirm the test fails (bug confirmed)
+
+**Check in with the human before proceeding to the fix.**
+
+**Commit 2 — Green (fix only):**
+1. Write the minimal fix for the bug
+2. Commit the fix
+3. Update `fix_commit` in `scenario.yaml` to this new commit
+4. `piledriver test <session>` — confirm test now passes
+
+**Do not modify `reproduce.sh` between red and green.** The same test must fail before the fix and pass after. If you believe `reproduce.sh` must change, stop and explain to the human why this is still a fair red/green test and not gaming the results. Only proceed with their approval.
 
 ## Report Structure
 
