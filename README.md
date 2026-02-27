@@ -49,6 +49,8 @@ Each command outputs guidance on next steps.
 5. **Testing** - Red/green: commit a failing test that proves the bug, then commit the fix
 6. **Report** - Document findings for multiple audiences, generate PR draft
 
+Here's an example transcript of working through a problem I'd already had Claude write a report on beforehand: https://gisthost.github.io/?81c350da2114a22cdf2f6274da89cd00/index.html
+
 ## Directory structure
 
 Created in your project's working directory:
