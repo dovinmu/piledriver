@@ -12,12 +12,13 @@ import (
 
 	"github.com/dovinmu/piledriver/pilemonkey/state"
 	"github.com/dovinmu/piledriver/pilemonkey/store"
+	"github.com/dovinmu/piledriver/pilemonkey/summarizer"
 	"github.com/dovinmu/piledriver/pilemonkey/tui"
 	"github.com/dovinmu/piledriver/pilemonkey/watcher"
 )
 
 var (
-	version = "0.2.0"
+	version = "0.3.2"
 )
 
 func main() {
@@ -26,6 +27,8 @@ func main() {
 	ignorePatterns := flag.String("i", "", "Additional patterns to ignore (comma-separated)")
 	sessionName := flag.String("s", "", "Piledriver session name (auto-detected if not specified)")
 	showVersion := flag.Bool("v", false, "Show version")
+	enableSummarizer := flag.Bool("summarizer", false, "Enable Claude conversation summarizer")
+	summarizerDebug := flag.Bool("summarizer-debug", false, "Enable debug logging for summarizer")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "pilemonkey - Real-time file diff viewer for watching agent changes\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: pilemonkey [flags] [directory]\n\n")
@@ -130,6 +133,29 @@ func main() {
 	// Set up watcher callback to send messages to TUI
 	w.OnChangeset = func(cs store.Changeset) {
 		p.Send(tui.ChangesetMsg{Changeset: cs})
+	}
+
+	// Start conversation summarizer if enabled
+	if *enableSummarizer {
+		sum, err := summarizer.New(absDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not start summarizer: %v\n", err)
+		} else {
+			if *summarizerDebug {
+				sum.SetDebug(true)
+			}
+			sum.OnSummary = func(summary string) {
+				p.Send(tui.ConversationSummaryMsg{Summary: summary})
+			}
+			sum.OnSessionTitle = func(title string) {
+				p.Send(tui.SessionTitleMsg{Title: title})
+			}
+			if err := sum.Start(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not start summarizer: %v\n", err)
+			} else {
+				defer sum.Stop()
+			}
+		}
 	}
 
 	// Start a goroutine to periodically refresh session state

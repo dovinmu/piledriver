@@ -16,12 +16,9 @@ const (
 	PhaseAssumptions    Phase = "ASSUMPTIONS"
 	PhaseVerification   Phase = "VERIFICATION"
 	PhaseReport         Phase = "REPORT"
-
-	// PhaseIdle is deprecated but kept for backwards compatibility with old state files
-	PhaseIdle Phase = "IDLE"
 )
 
-// AllPhases returns all phases in order (excluding deprecated IDLE)
+// AllPhases returns all phases in order
 func AllPhases() []Phase {
 	return []Phase{
 		PhaseReconnaissance,
@@ -30,14 +27,6 @@ func AllPhases() []Phase {
 		PhaseVerification,
 		PhaseReport,
 	}
-}
-
-// NormalizePhase converts legacy IDLE phase to RECONNAISSANCE
-func NormalizePhase(p Phase) Phase {
-	if p == PhaseIdle {
-		return PhaseReconnaissance
-	}
-	return p
 }
 
 // PhaseIndex returns the index of a phase (0-4)

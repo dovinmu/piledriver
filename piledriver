@@ -14,10 +14,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-# Directory names (prefer .piledriver hidden, support legacy piledriver/)
+# Directory name for piledriver sessions
 PILEDRIVER_DIR = ".piledriver"
-PILEDRIVER_DIR_LEGACY = "piledriver"
 
 # Phase constants (IDLE removed - sessions start in RECONNAISSANCE or SCOPING)
 PHASES = ["RECONNAISSANCE", "SCOPING", "ASSUMPTIONS", "VERIFICATION", "REPORT"]
@@ -50,7 +50,7 @@ Here is the worker agent's current state:
 
 # === State file management ===
 
-def read_state(session_dir: Path) -> dict | None:
+def read_state(session_dir: Path) -> Optional[dict]:
     """Read state.json from a session directory, with file locking."""
     state_file = session_dir / "state.json"
     if not state_file.exists():
@@ -223,10 +223,6 @@ def validate_phase_transition(session_dir: Path, current_phase: str, new_phase: 
     """
     if new_phase not in PHASES:
         return False, f"Invalid phase: {new_phase}"
-
-    # Handle legacy IDLE phase (for backwards compatibility)
-    if current_phase == "IDLE":
-        current_phase = "RECONNAISSANCE"
 
     try:
         current_idx = PHASES.index(current_phase)
@@ -789,7 +785,7 @@ def format_guidance(template_key: str, **kwargs) -> str:
     return "\n".join(lines)
 
 
-def find_repo_root() -> Path | None:
+def find_repo_root() -> Optional[Path]:
     """Find the git repository root by searching upward from cwd.
 
     Returns the directory containing .git, or None if not in a git repo.
@@ -805,7 +801,7 @@ def is_piledriver_dir(path: Path) -> bool:
     """Check if a directory is actually a piledriver session directory.
 
     Distinguishes piledriver directories from git repos that happen to be
-    named 'piledriver/' by checking for session indicators.
+    named '.piledriver/' by checking for session indicators.
     """
     if not path.exists() or not path.is_dir():
         return False
@@ -832,21 +828,15 @@ def is_piledriver_dir(path: Path) -> bool:
 
 
 def get_piledriver_root() -> Path:
-    """Find the piledriver directory, searching upward from cwd.
+    """Find the .piledriver directory, searching upward from cwd.
 
-    Supports both '.piledriver/' (preferred) and 'piledriver/' (legacy).
     For new projects, creates in the git repo root (not cwd).
     """
     cwd = Path.cwd()
     for parent in [cwd] + list(cwd.parents):
-        # Prefer .piledriver directory
         piledriver_path = parent / PILEDRIVER_DIR
         if is_piledriver_dir(piledriver_path):
             return piledriver_path
-        # Fall back to legacy piledriver/
-        legacy_path = parent / PILEDRIVER_DIR_LEGACY
-        if is_piledriver_dir(legacy_path):
-            return legacy_path
 
     # No existing dir found - default to repo root (or cwd if not in a repo)
     repo_root = find_repo_root()
@@ -947,15 +937,7 @@ def cmd_init(args):
         print(f"Error: {error}")
         return 1
 
-    # Check for existing piledriver dir (prefer existing, create new in repo root)
     piledriver_dir = get_piledriver_root()
-    if not piledriver_dir.exists():
-        # Create in repo root if we're in a git repo, otherwise cwd
-        repo_root = find_repo_root()
-        if repo_root:
-            piledriver_dir = repo_root / PILEDRIVER_DIR
-        else:
-            piledriver_dir = Path.cwd() / PILEDRIVER_DIR
 
     session_dir = piledriver_dir / session_name
 
@@ -1246,53 +1228,12 @@ def cmd_test(args):
         reproduce_sh = bug_dir / "reproduce.sh"
         results_file = bug_dir / "results.json"
 
-        # Also support legacy run.sh for backwards compatibility
-        legacy_runsh = bug_dir / "run.sh"
-
         # Check for required files
-        if not reproduce_sh.exists() and not legacy_runsh.exists():
+        if not reproduce_sh.exists():
             print(f"[{bug}] SKIP - no reproduce.sh")
             results.append((bug, "SKIP", "no reproduce.sh"))
             continue
 
-        # Legacy mode: if run.sh exists but no scenario.yaml, use old behavior
-        if legacy_runsh.exists() and not scenario_file.exists():
-            print(f"[{bug}] Running (legacy mode)...")
-            try:
-                result = subprocess.run(
-                    ["bash", str(legacy_runsh)],
-                    cwd=str(bug_dir),
-                    capture_output=True, text=True, timeout=600
-                )
-            except subprocess.TimeoutExpired:
-                print(f"[{bug}] TIMEOUT")
-                results.append((bug, "TIMEOUT", "exceeded 10 minutes"))
-                continue
-            except Exception as e:
-                print(f"[{bug}] ERROR - {e}")
-                results.append((bug, "ERROR", str(e)))
-                continue
-
-            # Read results.json from legacy script
-            if results_file.exists():
-                try:
-                    with open(results_file) as f:
-                        data = json.load(f)
-                    success = data.get("success", False)
-                    if success is True:
-                        results.append((bug, "PASS", "legacy mode"))
-                    else:
-                        results.append((bug, "FAIL", "legacy mode"))
-                    print(f"[{bug}] {'PASS' if success else 'FAIL'} (legacy mode)")
-                except:
-                    results.append((bug, "ERROR", "invalid results.json"))
-                    print(f"[{bug}] ERROR (invalid results.json)")
-            else:
-                results.append((bug, "ERROR", "no results.json"))
-                print(f"[{bug}] ERROR (no results.json)")
-            continue
-
-        # New mode: scenario.yaml + reproduce.sh
         config = parse_scenario_yaml(scenario_file)
         base_commit = config.get("base_commit", "").strip()
         fix_commit = config.get("fix_commit", "").strip()
@@ -1567,7 +1508,7 @@ def cmd_status(args):
 
 # === TLC helpers ===
 
-def find_tla2tools() -> Path | None:
+def find_tla2tools() -> Optional[Path]:
     """Find tla2tools.jar from various locations."""
     candidates = [
         Path.cwd() / "tools" / "tla2tools.jar",

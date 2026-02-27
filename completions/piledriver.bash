@@ -81,7 +81,7 @@ _piledriver_complete_sessions() {
     piledriver_dir=$(_piledriver_find_dir)
     if [[ -n "$piledriver_dir" && -d "$piledriver_dir" ]]; then
         local sessions
-        sessions=$(find "$piledriver_dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -v '^\.')
+        sessions=$(find "$piledriver_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r d; do basename "$d"; done | grep -v '^\.')
         COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
     fi
 }
@@ -92,7 +92,7 @@ _piledriver_complete_bugs() {
     piledriver_dir=$(_piledriver_find_dir)
     if [[ -n "$piledriver_dir" && -d "$piledriver_dir/$session/reproducers" ]]; then
         local bugs
-        bugs=$(find "$piledriver_dir/$session/reproducers" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
+        bugs=$(find "$piledriver_dir/$session/reproducers" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r d; do basename "$d"; done)
         COMPREPLY=($(compgen -W "$bugs" -- "$cur"))
     fi
 }
