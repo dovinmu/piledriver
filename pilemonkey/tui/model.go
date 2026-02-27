@@ -90,8 +90,7 @@ func NewModel(s *store.Store, rootDir string) Model {
 func (m *Model) SetSessionInfo(info *state.SessionInfo) {
 	m.sessionInfo = info
 	if info != nil && info.State != nil {
-		// Normalize IDLE to RECONNAISSANCE for backwards compatibility
-		m.viewingPhase = state.NormalizePhase(info.State.CurrentPhase)
+		m.viewingPhase = info.State.CurrentPhase
 	}
 }
 
@@ -124,9 +123,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionInfo = msg.SessionInfo
 		if msg.SessionInfo != nil && msg.SessionInfo.State != nil {
 			// Update viewing phase to current if we haven't navigated away
-			normalizedCurrent := state.NormalizePhase(msg.SessionInfo.State.CurrentPhase)
 			if m.viewingPhase == state.PhaseReconnaissance || m.sessionInfo == nil {
-				m.viewingPhase = normalizedCurrent
+				m.viewingPhase = msg.SessionInfo.State.CurrentPhase
 			}
 		}
 		return m, nil

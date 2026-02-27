@@ -8,9 +8,7 @@ import (
 	"strings"
 )
 
-// Directory names (prefer .piledriver hidden, support legacy piledriver/)
 const PiledriverDir = ".piledriver"
-const PiledriverDirLegacy = "piledriver"
 
 // FileStatus represents the state of a session file
 type FileStatus int
@@ -88,8 +86,7 @@ func isPiledriverDir(path string) bool {
 	return false
 }
 
-// FindPiledriverDir searches upward from dir for piledriver directory
-// Supports both '.piledriver/' (preferred) and 'piledriver/' (legacy)
+// FindPiledriverDir searches upward from dir for .piledriver directory
 func FindPiledriverDir(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -97,21 +94,13 @@ func FindPiledriverDir(startDir string) (string, error) {
 	}
 
 	for {
-		// Prefer .piledriver directory
 		pdDir := filepath.Join(dir, PiledriverDir)
 		if isPiledriverDir(pdDir) {
 			return pdDir, nil
 		}
 
-		// Fall back to legacy piledriver/
-		pdDirLegacy := filepath.Join(dir, PiledriverDirLegacy)
-		if isPiledriverDir(pdDirLegacy) {
-			return pdDirLegacy, nil
-		}
-
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			// Reached root
 			return "", nil
 		}
 		dir = parent

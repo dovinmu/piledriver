@@ -37,8 +37,6 @@ var (
 	fileMissingStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#6272a4")) // Gray - doesn't exist
 
-	// Alias for backwards compatibility
-	fileExistsStyle = fileFilledStyle
 
 	// TLC status styles - semantic colors for bug hunting context
 	tlcViolationStyle = lipgloss.NewStyle().
@@ -371,7 +369,7 @@ func renderReproducerSummary(m Model) string {
 
 	parts := []string{fmt.Sprintf("%d total", total)}
 	if passing > 0 {
-		parts = append(parts, fileExistsStyle.Render(fmt.Sprintf("%d passing", passing)))
+		parts = append(parts, fileFilledStyle.Render(fmt.Sprintf("%d passing", passing)))
 	}
 	if failing > 0 {
 		parts = append(parts, removedLineStyle.Render(fmt.Sprintf("%d failing", failing)))
@@ -400,7 +398,7 @@ func renderTLCStatus(m Model) string {
 	var status string
 	if result.SanyOnly {
 		if result.Success {
-			status = fileExistsStyle.Render("Syntax OK")
+			status = fileFilledStyle.Render("Syntax OK")
 		} else {
 			status = tlcErrorStyle.Render("Syntax errors")
 		}
