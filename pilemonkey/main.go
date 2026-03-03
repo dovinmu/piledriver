@@ -27,7 +27,8 @@ func main() {
 	ignorePatterns := flag.String("i", "", "Additional patterns to ignore (comma-separated)")
 	sessionName := flag.String("s", "", "Piledriver session name (auto-detected if not specified)")
 	showVersion := flag.Bool("v", false, "Show version")
-	enableSummarizer := flag.Bool("summarizer", false, "Enable Claude conversation summarizer")
+	enableSummarizer := flag.Bool("summarizer", true, "Enable conversation summarizer (Claude Code and opencode)")
+	summarizerSource := flag.String("summarizer-source", "auto", "Conversation source: auto, claude, or opencode")
 	summarizerDebug := flag.Bool("summarizer-debug", false, "Enable debug logging for summarizer")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "pilemonkey - Real-time file diff viewer for watching agent changes\n\n")
@@ -137,13 +138,13 @@ func main() {
 
 	// Start conversation summarizer if enabled
 	if *enableSummarizer {
-		sum, err := summarizer.New(absDir)
+		sum, err := summarizer.New(absDir, summarizer.Options{
+			SourcePreference: *summarizerSource,
+			Debug:            *summarizerDebug,
+		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not start summarizer: %v\n", err)
 		} else {
-			if *summarizerDebug {
-				sum.SetDebug(true)
-			}
 			sum.OnSummary = func(summary string) {
 				p.Send(tui.ConversationSummaryMsg{Summary: summary})
 			}
