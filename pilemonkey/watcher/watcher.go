@@ -49,10 +49,10 @@ type Watcher struct {
 	ignorePatterns []string
 	debounceTime   time.Duration
 
-	// Debouncing
-	mu          sync.Mutex
-	pendingFile string
-	debounceTimer *time.Timer
+	// Debouncing: one timer per path so concurrent edits to different
+	// files don't cancel each other.
+	mu     sync.Mutex
+	timers map[string]*time.Timer
 
 	// Callback for new changesets
 	OnChangeset func(store.Changeset)
@@ -75,6 +75,7 @@ func New(rootDir string, s *store.Store, extraIgnorePatterns []string) (*Watcher
 		rootDir:        rootDir,
 		ignorePatterns: patterns,
 		debounceTime:   100 * time.Millisecond,
+		timers:         make(map[string]*time.Timer),
 	}
 
 	return w, nil
@@ -158,14 +159,14 @@ func (w *Watcher) debounce(path string, isDelete bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Cancel previous timer if exists
-	if w.debounceTimer != nil {
-		w.debounceTimer.Stop()
+	if t, ok := w.timers[path]; ok {
+		t.Stop()
 	}
 
-	w.pendingFile = path
-
-	w.debounceTimer = time.AfterFunc(w.debounceTime, func() {
+	w.timers[path] = time.AfterFunc(w.debounceTime, func() {
+		w.mu.Lock()
+		delete(w.timers, path)
+		w.mu.Unlock()
 		w.processChange(path, isDelete)
 	})
 }
