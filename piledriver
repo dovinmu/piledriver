@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -1696,6 +1697,109 @@ def cmd_check(args):
     return 0 if parsed["success"] else 1
 
 
+def cmd_tlc(args):
+    """Run TLC on an arbitrary .tla file, independent of sessions."""
+    tla_path = Path(args.tla_file).resolve()
+    if not tla_path.exists():
+        print(f"Error: TLA file not found: {tla_path}")
+        return 1
+
+    if args.cfg_file:
+        cfg_path = Path(args.cfg_file).resolve()
+        if not cfg_path.exists():
+            print(f"Error: CFG file not found: {cfg_path}")
+            return 1
+    else:
+        sibling = tla_path.with_suffix(".cfg")
+        cfg_path = sibling if sibling.exists() else None
+
+    sany_only = getattr(args, "sany", False)
+
+    tla2tools = find_tla2tools()
+    if not tla2tools:
+        print("Error: Cannot find tla2tools.jar")
+        print("Set PILEDRIVER_HOME or TLA2TOOLS environment variable,")
+        print("or place tla2tools.jar in ./tools/")
+        return 1
+
+    try:
+        result = subprocess.run(["java", "-version"], capture_output=True, text=True, timeout=5)
+        if "version" not in result.stderr.lower() and "version" not in result.stdout.lower():
+            raise FileNotFoundError("java stub")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("Error: Java not found or not working")
+        print("Install Java (JRE 11+):")
+        print("  macOS:  brew install openjdk@17")
+        print("  Ubuntu: sudo apt install openjdk-17-jre")
+        print()
+        print("Or run: ./tools/setup.sh")
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="piledriver-tlc-") as metadir:
+        if sany_only:
+            cmd = ["java", "-cp", str(tla2tools), "tla2sany.SANY", str(tla_path)]
+            print(f"Running syntax check on {tla_path.name}...")
+        else:
+            cmd = [
+                "java", "-jar", str(tla2tools),
+                str(tla_path),
+                "-metadir", metadir,
+            ]
+            if cfg_path:
+                cmd.extend(["-config", str(cfg_path)])
+                print(f"Running TLC on {tla_path.name} with {cfg_path.name}...")
+            else:
+                print(f"Running TLC on {tla_path.name} (no .cfg found — TLC will use defaults)...")
+
+        print(f"Command: {' '.join(cmd)}")
+        print("-" * 60)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(tla_path.parent),
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            output = result.stdout + result.stderr
+            print(output)
+        except subprocess.TimeoutExpired:
+            print("Error: TLC timed out after 10 minutes")
+            return 1
+        except Exception as e:
+            print(f"Error running TLC: {e}")
+            return 1
+
+    print("-" * 60)
+
+    parsed = parse_tlc_output(output)
+
+    print()
+    print("Summary:")
+    if sany_only:
+        if parsed["errors"]:
+            print("  Syntax errors found:")
+            for err in parsed["errors"][:5]:
+                print(f"    {err}")
+        else:
+            print("  Syntax OK")
+    else:
+        print(f"  States: {parsed['states_generated']} generated, {parsed['distinct_states']} distinct")
+        if parsed["violations"]:
+            print(f"  Violations: {len(parsed['violations'])}")
+            for v in parsed["violations"][:3]:
+                print(f"    {v}")
+        elif parsed["errors"]:
+            print("  Errors found:")
+            for err in parsed["errors"][:3]:
+                print(f"    {err}")
+        else:
+            print("  No violations found")
+
+    return 0 if parsed["success"] else 1
+
+
 # === Verification technique management ===
 
 VERIFICATION_TECHNIQUES = {
@@ -2143,6 +2247,7 @@ Commands:
   test <session> [bug]        Run before/after test validation
   status [session]            Show current state
   check <session>             Run TLC model checker
+  tlc <tla> [cfg]             Run TLC on an arbitrary .tla file (no session)
   pr <session>                Generate PR draft from report
   critique <session> <context> Send context to critic agent for feedback
 
@@ -2191,6 +2296,13 @@ Examples:
     check_parser.add_argument("session_name", nargs="?", help="Session to check (auto-detected if only one)")
     check_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
 
+    # tlc command (session-independent)
+    tlc_parser = subparsers.add_parser("tlc", help="Run TLC on an arbitrary .tla file (no session required)")
+    tlc_parser.add_argument("tla_file", help="Path to the .tla file")
+    tlc_parser.add_argument("cfg_file", nargs="?",
+                            help="Path to the .cfg file (defaults to <tla_file>.cfg sibling if present)")
+    tlc_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
+
     # pr command
     pr_parser = subparsers.add_parser("pr", help="Generate PR draft from report")
     pr_parser.add_argument("session_name", help="Session to generate PR for")
@@ -2229,6 +2341,8 @@ Examples:
         return cmd_set_phase(args)
     elif args.command == "check":
         return cmd_check(args)
+    elif args.command == "tlc":
+        return cmd_tlc(args)
     elif args.command == "pr":
         return cmd_pr(args)
     elif args.command == "technique":

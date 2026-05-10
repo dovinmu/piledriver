@@ -30,6 +30,7 @@ piledriver init <session-name>              # Create session with scaffolding
 piledriver set-phase <session> <phase>      # Transition between phases
 piledriver technique <session> [type]       # View/set verification technique
 piledriver check <session-name> [--sany]    # Run TLC model checker
+piledriver tlc <tla> [cfg] [--sany]         # Run TLC on arbitrary .tla/.cfg (no session)
 piledriver bug <session-name> <bug-name>    # Create bug reproducer
 piledriver test <session-name> [bug-name]   # Run reproducer validation
 piledriver pr <session-name>                # Generate PR draft

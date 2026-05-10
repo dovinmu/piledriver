@@ -12,6 +12,7 @@ _piledriver() {
         'test:Run before/after test validation'
         'status:Show current state'
         'check:Run TLC model checker'
+        'tlc:Run TLC on an arbitrary .tla file (no session required)'
         'pr:Generate PR draft from report'
         'technique:View or set verification technique'
     )
@@ -56,6 +57,12 @@ _piledriver() {
                 check)
                     _arguments \
                         '1:session:_piledriver_sessions' \
+                        '--sany[Syntax check only (no model checking)]'
+                    ;;
+                tlc)
+                    _arguments \
+                        '1:tla file:_files -g "*.tla"' \
+                        '2:cfg file:_files -g "*.cfg"' \
                         '--sany[Syntax check only (no model checking)]'
                     ;;
                 pr)
