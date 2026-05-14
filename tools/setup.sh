@@ -5,10 +5,15 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR_PATH="$SCRIPT_DIR/tla2tools.jar"
+CM_PATH="$SCRIPT_DIR/CommunityModules-deps.jar"
 
 # TLA+ tools release - update version as needed
 TLA_VERSION="1.8.0"
 TLA_URL="https://github.com/tlaplus/tlaplus/releases/download/v${TLA_VERSION}/tla2tools.jar"
+
+# CommunityModules provides IOUtils, CSV, and other helpers used by real-world specs.
+# Pinning to "latest" since CommunityModules releases are date-stamped.
+CM_URL="https://github.com/tlaplus/CommunityModules/releases/latest/download/CommunityModules-deps.jar"
 
 echo "Piledriver Setup"
 echo "================"
@@ -49,11 +54,31 @@ download_tla2tools() {
     fi
 }
 
+# Download CommunityModules-deps.jar
+download_community_modules() {
+    if [ -f "$CM_PATH" ]; then
+        echo "[OK] CommunityModules-deps.jar exists at $CM_PATH"
+        return 0
+    fi
+
+    echo "Downloading CommunityModules-deps.jar..."
+    if curl --fail -L -o "$CM_PATH" "$CM_URL"; then
+        echo "[OK] Downloaded CommunityModules-deps.jar"
+        return 0
+    else
+        echo "[WARN] Failed to download CommunityModules-deps.jar"
+        echo "       Specs that use IOUtils, CSV, etc. will fail to parse."
+        return 1
+    fi
+}
+
 # Run checks
 MISSING=0
 
 check_java || MISSING=1
 download_tla2tools || MISSING=1
+# CommunityModules is optional — don't gate setup on it.
+download_community_modules || true
 
 echo
 if [ $MISSING -eq 0 ]; then

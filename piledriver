@@ -1524,6 +1524,47 @@ def find_tla2tools() -> Optional[Path]:
     return None
 
 
+def find_community_modules() -> Optional[Path]:
+    """Find CommunityModules-deps.jar from various locations.
+
+    The CommunityModules jar provides modules like IOUtils, CSV, etc. that
+    aren't bundled in tla2tools.jar but are commonly used by real-world specs.
+    """
+    candidates = [
+        Path.cwd() / "tools" / "CommunityModules-deps.jar",
+        Path(__file__).resolve().parent / "tools" / "CommunityModules-deps.jar",
+        Path(os.environ.get("PILEDRIVER_HOME", "")) / "tools" / "CommunityModules-deps.jar" if os.environ.get("PILEDRIVER_HOME") else None,
+        Path(os.environ.get("COMMUNITY_MODULES", "")) if os.environ.get("COMMUNITY_MODULES") else None,
+    ]
+
+    for path in candidates:
+        if path and path.exists():
+            return path
+    return None
+
+
+def build_tlc_command(tla2tools: Path, tla_path: Path, metadir: str,
+                      cfg_path: Optional[Path], sany_only: bool) -> list:
+    """Build the java command for invoking TLC or SANY.
+
+    Adds CommunityModules-deps.jar to the classpath when present so that specs
+    using IOUtils, CSV, etc. can be parsed.
+    """
+    classpath = [str(tla2tools)]
+    community = find_community_modules()
+    if community:
+        classpath.append(str(community))
+    cp = os.pathsep.join(classpath)
+
+    if sany_only:
+        return ["java", "-cp", cp, "tla2sany.SANY", str(tla_path)]
+
+    cmd = ["java", "-cp", cp, "tlc2.TLC", str(tla_path), "-metadir", metadir]
+    if cfg_path:
+        cmd.extend(["-config", str(cfg_path)])
+    return cmd
+
+
 def parse_tlc_output(output: str) -> dict:
     """Parse TLC output for key information."""
     import re
@@ -1612,17 +1653,11 @@ def cmd_check(args):
         return 1
 
     # Build command
+    cfg_for_cmd = model_cfg if model_cfg.exists() else None
+    cmd = build_tlc_command(tla2tools, model_tla, str(tlc_out), cfg_for_cmd, sany_only)
     if sany_only:
-        cmd = ["java", "-cp", str(tla2tools), "tla2sany.SANY", str(model_tla)]
         print(f"Running syntax check on {model_tla.name}...")
     else:
-        cmd = [
-            "java", "-jar", str(tla2tools),
-            str(model_tla),
-            "-metadir", str(tlc_out),
-        ]
-        if model_cfg.exists():
-            cmd.extend(["-config", str(model_cfg)])
         print(f"Running TLC on {model_tla.name}...")
 
     print(f"Command: {' '.join(cmd)}")
@@ -1704,6 +1739,15 @@ def cmd_tlc(args):
         print(f"Error: TLA file not found: {tla_path}")
         return 1
 
+    if tla_path.suffix.lower() == ".cfg":
+        sibling_tla = tla_path.with_suffix(".tla")
+        hint = f" (did you mean {sibling_tla.name}?)" if sibling_tla.exists() else ""
+        print(f"Error: First argument must be a .tla file, got {tla_path.name}{hint}")
+        print(f"Usage: piledriver tlc <spec.tla> [config.cfg]")
+        return 1
+
+    sany_only = getattr(args, "sany", False)
+
     if args.cfg_file:
         cfg_path = Path(args.cfg_file).resolve()
         if not cfg_path.exists():
@@ -1711,9 +1755,12 @@ def cmd_tlc(args):
             return 1
     else:
         sibling = tla_path.with_suffix(".cfg")
+        if not sibling.exists() and not sany_only:
+            print(f"Error: CFG file not found: {sibling}")
+            print("Provide an explicit config path, or create a sibling .cfg with the same basename.")
+            print(f"Usage: piledriver tlc {tla_path.name} {tla_path.with_suffix('.cfg').name}")
+            return 1
         cfg_path = sibling if sibling.exists() else None
-
-    sany_only = getattr(args, "sany", False)
 
     tla2tools = find_tla2tools()
     if not tla2tools:
@@ -1736,20 +1783,11 @@ def cmd_tlc(args):
         return 1
 
     with tempfile.TemporaryDirectory(prefix="piledriver-tlc-") as metadir:
+        cmd = build_tlc_command(tla2tools, tla_path, metadir, cfg_path, sany_only)
         if sany_only:
-            cmd = ["java", "-cp", str(tla2tools), "tla2sany.SANY", str(tla_path)]
             print(f"Running syntax check on {tla_path.name}...")
         else:
-            cmd = [
-                "java", "-jar", str(tla2tools),
-                str(tla_path),
-                "-metadir", metadir,
-            ]
-            if cfg_path:
-                cmd.extend(["-config", str(cfg_path)])
-                print(f"Running TLC on {tla_path.name} with {cfg_path.name}...")
-            else:
-                print(f"Running TLC on {tla_path.name} (no .cfg found — TLC will use defaults)...")
+            print(f"Running TLC on {tla_path.name} with {cfg_path.name}...")
 
         print(f"Command: {' '.join(cmd)}")
         print("-" * 60)
