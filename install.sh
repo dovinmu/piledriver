@@ -2,11 +2,14 @@
 set -e
 
 # Piledriver installer
-# Downloads TLA+ tools, optionally installs Claude Code slash command
+# Downloads TLA+ tools, installs agent integrations
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
+CODEX_DIR="$HOME/.codex"
+CODEX_SKILLS_DIR="$CODEX_DIR/skills"
+BIN_DIR="${PILEDRIVER_INSTALL_BIN:-$HOME/.local/bin}"
 
 echo "Piledriver Installer"
 echo "===================="
@@ -23,17 +26,69 @@ echo "Checking TLA+ tools..."
 "$SCRIPT_DIR/tools/setup.sh"
 echo
 
-# 2. PATH guidance
-if ! command -v piledriver &>/dev/null; then
-    echo "To use piledriver from anywhere, add it to your PATH:"
-    echo "  export PATH=\"$SCRIPT_DIR:\$PATH\""
-    echo
-    echo "Or create a symlink:"
-    echo "  ln -s $SCRIPT_DIR/piledriver /usr/local/bin/piledriver"
-    echo
+# 2. Install CLI on PATH
+echo "Installing piledriver CLI..."
+mkdir -p "$BIN_DIR"
+BIN_PATH="$BIN_DIR/piledriver"
+
+if [ "$BIN_PATH" -ef "$SCRIPT_DIR/piledriver" ] 2>/dev/null; then
+    echo "[OK] piledriver already linked at $BIN_PATH"
+elif [ -L "$BIN_PATH" ]; then
+    ln -sfn "$SCRIPT_DIR/piledriver" "$BIN_PATH"
+    echo "[OK] Updated symlink: $BIN_PATH -> $SCRIPT_DIR/piledriver"
+elif [ -e "$BIN_PATH" ]; then
+    echo "[WARN] $BIN_PATH already exists and is not a symlink; leaving it unchanged."
+    echo "       To install this copy, remove that file or set PILEDRIVER_INSTALL_BIN to another directory."
+else
+    ln -s "$SCRIPT_DIR/piledriver" "$BIN_PATH"
+    echo "[OK] Created symlink: $BIN_PATH -> $SCRIPT_DIR/piledriver"
 fi
 
-# 3. Claude Code slash command (optional)
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        echo "[WARN] $BIN_DIR is not on PATH."
+        echo "       Add this to your shell profile:"
+        echo "         export PATH=\"$BIN_DIR:\$PATH\""
+        ;;
+esac
+
+if command -v piledriver &>/dev/null; then
+    RESOLVED_PILEDRIVER="$(command -v piledriver)"
+    if [ "$RESOLVED_PILEDRIVER" != "$BIN_PATH" ] && [ "$RESOLVED_PILEDRIVER" != "$SCRIPT_DIR/piledriver" ]; then
+        echo "[WARN] 'piledriver' currently resolves to $RESOLVED_PILEDRIVER before $BIN_PATH on PATH."
+        echo "       Reorder PATH if you want this checkout to take precedence."
+    else
+        echo "[OK] 'piledriver' is runnable from this shell."
+    fi
+elif [ -x "$BIN_PATH" ]; then
+    echo "[WARN] Symlink installed, but 'piledriver' is not visible in this shell's PATH yet."
+else
+    echo "[WARN] piledriver was not installed on PATH."
+fi
+echo
+
+# 3. Codex skill
+echo "Installing Codex skill..."
+mkdir -p "$CODEX_SKILLS_DIR/piledriver"
+
+cat > "$CODEX_SKILLS_DIR/piledriver/SKILL.md" << EOF
+---
+name: piledriver
+description: Use when the user wants to start, run, or continue a Piledriver bug-hunting workflow; investigate a suspected bug with formal methods; define verification boundaries and assumptions; create reproducers; run piledriver CLI commands; or follow Piledriver's red/green testing and report process.
+metadata:
+  short-description: Systematic formal-methods bug hunting
+---
+
+EOF
+
+cat "$SCRIPT_DIR/AGENTS.md" >> "$CODEX_SKILLS_DIR/piledriver/SKILL.md"
+
+echo "Installed Codex skill: piledriver"
+echo "  Usage: ask Codex to \"use the piledriver skill\" when starting a bug hunt."
+echo
+
+# 4. Claude Code slash command (optional)
 if [ -d "$CLAUDE_DIR" ]; then
     mkdir -p "$COMMANDS_DIR"
 
@@ -88,7 +143,7 @@ else
     echo
 fi
 
-# 4. Guidance for other agents
+# 5. Guidance for other agents
 echo "For use with other AI agents, point them at AGENTS.md:"
 echo "  $SCRIPT_DIR/AGENTS.md"
 echo

@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -1523,6 +1524,47 @@ def find_tla2tools() -> Optional[Path]:
     return None
 
 
+def find_community_modules() -> Optional[Path]:
+    """Find CommunityModules-deps.jar from various locations.
+
+    The CommunityModules jar provides modules like IOUtils, CSV, etc. that
+    aren't bundled in tla2tools.jar but are commonly used by real-world specs.
+    """
+    candidates = [
+        Path.cwd() / "tools" / "CommunityModules-deps.jar",
+        Path(__file__).resolve().parent / "tools" / "CommunityModules-deps.jar",
+        Path(os.environ.get("PILEDRIVER_HOME", "")) / "tools" / "CommunityModules-deps.jar" if os.environ.get("PILEDRIVER_HOME") else None,
+        Path(os.environ.get("COMMUNITY_MODULES", "")) if os.environ.get("COMMUNITY_MODULES") else None,
+    ]
+
+    for path in candidates:
+        if path and path.exists():
+            return path
+    return None
+
+
+def build_tlc_command(tla2tools: Path, tla_path: Path, metadir: str,
+                      cfg_path: Optional[Path], sany_only: bool) -> list:
+    """Build the java command for invoking TLC or SANY.
+
+    Adds CommunityModules-deps.jar to the classpath when present so that specs
+    using IOUtils, CSV, etc. can be parsed.
+    """
+    classpath = [str(tla2tools)]
+    community = find_community_modules()
+    if community:
+        classpath.append(str(community))
+    cp = os.pathsep.join(classpath)
+
+    if sany_only:
+        return ["java", "-cp", cp, "tla2sany.SANY", str(tla_path)]
+
+    cmd = ["java", "-cp", cp, "tlc2.TLC", str(tla_path), "-metadir", metadir]
+    if cfg_path:
+        cmd.extend(["-config", str(cfg_path)])
+    return cmd
+
+
 def parse_tlc_output(output: str) -> dict:
     """Parse TLC output for key information."""
     import re
@@ -1611,17 +1653,11 @@ def cmd_check(args):
         return 1
 
     # Build command
+    cfg_for_cmd = model_cfg if model_cfg.exists() else None
+    cmd = build_tlc_command(tla2tools, model_tla, str(tlc_out), cfg_for_cmd, sany_only)
     if sany_only:
-        cmd = ["java", "-cp", str(tla2tools), "tla2sany.SANY", str(model_tla)]
         print(f"Running syntax check on {model_tla.name}...")
     else:
-        cmd = [
-            "java", "-jar", str(tla2tools),
-            str(model_tla),
-            "-metadir", str(tlc_out),
-        ]
-        if model_cfg.exists():
-            cmd.extend(["-config", str(model_cfg)])
         print(f"Running TLC on {model_tla.name}...")
 
     print(f"Command: {' '.join(cmd)}")
@@ -1692,6 +1728,112 @@ def cmd_check(args):
         else:
             print("  No violations found")
             print(format_guidance("check:success", session=session_name))
+
+    return 0 if parsed["success"] else 1
+
+
+def cmd_tlc(args):
+    """Run TLC on an arbitrary .tla file, independent of sessions."""
+    tla_path = Path(args.tla_file).resolve()
+    if not tla_path.exists():
+        print(f"Error: TLA file not found: {tla_path}")
+        return 1
+
+    if tla_path.suffix.lower() == ".cfg":
+        sibling_tla = tla_path.with_suffix(".tla")
+        hint = f" (did you mean {sibling_tla.name}?)" if sibling_tla.exists() else ""
+        print(f"Error: First argument must be a .tla file, got {tla_path.name}{hint}")
+        print(f"Usage: piledriver tlc <spec.tla> [config.cfg]")
+        return 1
+
+    sany_only = getattr(args, "sany", False)
+
+    if args.cfg_file:
+        cfg_path = Path(args.cfg_file).resolve()
+        if not cfg_path.exists():
+            print(f"Error: CFG file not found: {cfg_path}")
+            return 1
+    else:
+        sibling = tla_path.with_suffix(".cfg")
+        if not sibling.exists() and not sany_only:
+            print(f"Error: CFG file not found: {sibling}")
+            print("Provide an explicit config path, or create a sibling .cfg with the same basename.")
+            print(f"Usage: piledriver tlc {tla_path.name} {tla_path.with_suffix('.cfg').name}")
+            return 1
+        cfg_path = sibling if sibling.exists() else None
+
+    tla2tools = find_tla2tools()
+    if not tla2tools:
+        print("Error: Cannot find tla2tools.jar")
+        print("Set PILEDRIVER_HOME or TLA2TOOLS environment variable,")
+        print("or place tla2tools.jar in ./tools/")
+        return 1
+
+    try:
+        result = subprocess.run(["java", "-version"], capture_output=True, text=True, timeout=5)
+        if "version" not in result.stderr.lower() and "version" not in result.stdout.lower():
+            raise FileNotFoundError("java stub")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("Error: Java not found or not working")
+        print("Install Java (JRE 11+):")
+        print("  macOS:  brew install openjdk@17")
+        print("  Ubuntu: sudo apt install openjdk-17-jre")
+        print()
+        print("Or run: ./tools/setup.sh")
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="piledriver-tlc-") as metadir:
+        cmd = build_tlc_command(tla2tools, tla_path, metadir, cfg_path, sany_only)
+        if sany_only:
+            print(f"Running syntax check on {tla_path.name}...")
+        else:
+            print(f"Running TLC on {tla_path.name} with {cfg_path.name}...")
+
+        print(f"Command: {' '.join(cmd)}")
+        print("-" * 60)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(tla_path.parent),
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            output = result.stdout + result.stderr
+            print(output)
+        except subprocess.TimeoutExpired:
+            print("Error: TLC timed out after 10 minutes")
+            return 1
+        except Exception as e:
+            print(f"Error running TLC: {e}")
+            return 1
+
+    print("-" * 60)
+
+    parsed = parse_tlc_output(output)
+
+    print()
+    print("Summary:")
+    if sany_only:
+        if parsed["errors"]:
+            print("  Syntax errors found:")
+            for err in parsed["errors"][:5]:
+                print(f"    {err}")
+        else:
+            print("  Syntax OK")
+    else:
+        print(f"  States: {parsed['states_generated']} generated, {parsed['distinct_states']} distinct")
+        if parsed["violations"]:
+            print(f"  Violations: {len(parsed['violations'])}")
+            for v in parsed["violations"][:3]:
+                print(f"    {v}")
+        elif parsed["errors"]:
+            print("  Errors found:")
+            for err in parsed["errors"][:3]:
+                print(f"    {err}")
+        else:
+            print("  No violations found")
 
     return 0 if parsed["success"] else 1
 
@@ -2143,6 +2285,7 @@ Commands:
   test <session> [bug]        Run before/after test validation
   status [session]            Show current state
   check <session>             Run TLC model checker
+  tlc <tla> [cfg]             Run TLC on an arbitrary .tla file (no session)
   pr <session>                Generate PR draft from report
   critique <session> <context> Send context to critic agent for feedback
 
@@ -2191,6 +2334,13 @@ Examples:
     check_parser.add_argument("session_name", nargs="?", help="Session to check (auto-detected if only one)")
     check_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
 
+    # tlc command (session-independent)
+    tlc_parser = subparsers.add_parser("tlc", help="Run TLC on an arbitrary .tla file (no session required)")
+    tlc_parser.add_argument("tla_file", help="Path to the .tla file")
+    tlc_parser.add_argument("cfg_file", nargs="?",
+                            help="Path to the .cfg file (defaults to <tla_file>.cfg sibling if present)")
+    tlc_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
+
     # pr command
     pr_parser = subparsers.add_parser("pr", help="Generate PR draft from report")
     pr_parser.add_argument("session_name", help="Session to generate PR for")
@@ -2229,6 +2379,8 @@ Examples:
         return cmd_set_phase(args)
     elif args.command == "check":
         return cmd_check(args)
+    elif args.command == "tlc":
+        return cmd_tlc(args)
     elif args.command == "pr":
         return cmd_pr(args)
     elif args.command == "technique":

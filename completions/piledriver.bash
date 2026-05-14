@@ -6,7 +6,7 @@ _piledriver_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="init set-phase bug test status check pr technique"
+    local commands="init set-phase bug test status check tlc pr technique"
     local phases="RECONNAISSANCE SCOPING ASSUMPTIONS VERIFICATION REPORT"
     local techniques="tla+ property-test fuzz diff-test manual"
 
@@ -57,6 +57,17 @@ _piledriver_completions() {
         check)
             if [[ $cword -eq 2 ]]; then
                 _piledriver_complete_sessions
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--sany" -- "$cur"))
+            fi
+            ;;
+        tlc)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -f -X '!*.tla' -- "$cur"))
+                compopt -o plusdirs 2>/dev/null
+            elif [[ $cword -eq 3 ]]; then
+                COMPREPLY=($(compgen -f -X '!*.cfg' -- "$cur"))
+                compopt -o plusdirs 2>/dev/null
             elif [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "--sany" -- "$cur"))
             fi

@@ -11,7 +11,7 @@ Piledriver is a bug-hunting workflow for agents to produce high-quality, tested,
 ./install.sh
 ```
 
-This downloads TLA+ tools and, if Claude Code is installed, creates the `/piledriver` slash command for Claude Code by copying AGENTS.md.
+This downloads TLA+ tools, installs a `piledriver` symlink into `~/.local/bin` (override with `PILEDRIVER_INSTALL_BIN=/path/to/bin`), installs a Codex `piledriver` skill into `~/.codex/skills/piledriver`, and, if Claude Code is installed, creates the `/piledriver` slash command for Claude Code by copying AGENTS.md.
 
 ## Usage
 ### For the human
@@ -21,7 +21,13 @@ From any project directory:
 /piledriver I think there's a race condition in the session manager
 ```
 
-If you're not using Claude Code or haven't installed Piledriver as a skill, just point your agent at the AGENTS.md file in this repo. To follow along at a high level with the current phase your agent is in and other status updates, build `pilemonkey` and run the binary from a second terminal in the same directory as Claude Code (currently only compatible with Claude Code). 
+With Codex, start by saying something like:
+
+```
+Use the piledriver skill to investigate a suspected race condition in the session manager.
+```
+
+If you're not using Claude Code/Codex or haven't installed Piledriver as a skill, just point your agent at the AGENTS.md file in this repo. To follow along at a high level with the current phase your agent is in and other status updates, build `pilemonkey` and run the binary from a second terminal in the same directory as Claude Code (currently only compatible with Claude Code). 
 
 ### For the agent
 Your starting point is AGENTS.md, and your toolkit is the `piledriver` CLI. Here are the important commands you'll be using during the course of the workflow:
@@ -30,6 +36,7 @@ piledriver init <session-name>              # Create session with scaffolding
 piledriver set-phase <session> <phase>      # Transition between phases
 piledriver technique <session> [type]       # View/set verification technique
 piledriver check <session-name> [--sany]    # Run TLC model checker
+piledriver tlc <tla> [cfg] [--sany]         # Run TLC on arbitrary .tla/.cfg (no session)
 piledriver bug <session-name> <bug-name>    # Create bug reproducer
 piledriver test <session-name> [bug-name]   # Run reproducer validation
 piledriver pr <session-name>                # Generate PR draft

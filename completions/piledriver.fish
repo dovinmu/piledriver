@@ -1,7 +1,7 @@
 # Fish completion for piledriver
 # Install: copy to ~/.config/fish/completions/piledriver.fish
 
-set -l commands init set-phase bug test status check pr technique
+set -l commands init set-phase bug test status check tlc pr technique
 
 # Disable file completion by default
 complete -c piledriver -f
@@ -13,6 +13,7 @@ complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a bug -d 
 complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a test -d "Run before/after test validation"
 complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a status -d "Show current state"
 complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a check -d "Run TLC model checker"
+complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a tlc -d "Run TLC on an arbitrary .tla file (no session required)"
 complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a pr -d "Generate PR draft from report"
 complete -c piledriver -n "not __fish_seen_subcommand_from $commands" -a technique -d "View or set verification technique"
 
@@ -70,6 +71,11 @@ complete -c piledriver -n "__fish_seen_subcommand_from status; and test (count (
 # check: session name + optional --sany
 complete -c piledriver -n "__fish_seen_subcommand_from check; and test (count (commandline -opc)) -eq 2" -a "(__piledriver_sessions)" -d "Session"
 complete -c piledriver -n "__fish_seen_subcommand_from check" -l sany -d "Syntax check only (no model checking)"
+
+# tlc: tla file, then optional cfg file, with file completion
+complete -c piledriver -n "__fish_seen_subcommand_from tlc; and test (count (commandline -opc)) -eq 2" -F -r -a "(__fish_complete_suffix .tla)" -d "TLA file"
+complete -c piledriver -n "__fish_seen_subcommand_from tlc; and test (count (commandline -opc)) -eq 3" -F -r -a "(__fish_complete_suffix .cfg)" -d "CFG file"
+complete -c piledriver -n "__fish_seen_subcommand_from tlc" -l sany -d "Syntax check only (no model checking)"
 
 # pr: session name
 complete -c piledriver -n "__fish_seen_subcommand_from pr; and test (count (commandline -opc)) -eq 2" -a "(__piledriver_sessions)" -d "Session"
