@@ -42,6 +42,7 @@ piledriver init <session> --skip-recon # Start session (SCOPING)
 piledriver set-phase <session> <phase> # Transition phases
 piledriver technique <session> [type]  # View/set verification technique
 piledriver check <session> [--sany]    # Run TLC (if using TLA+)
+piledriver tlc <tla> [cfg] [--sany]    # Run TLC/SANY on arbitrary .tla/.cfg (no session)
 piledriver bug <session> <bug>         # Create reproducer scaffold
 piledriver test <session> [bug]        # Run reproducer validation
 piledriver pr <session>                # Generate PR draft
@@ -51,6 +52,21 @@ piledriver critique <session> <context> # Get feedback from critic agent
 ```
 
 Session names must be lowercase.
+
+### Standalone TLA+ Models
+
+Use `piledriver check <session>` for session-scaffolded `model.tla`/`model.cfg`.
+Use `piledriver tlc <tla> [cfg]` to run a TLA+ model directly from the codebase
+without creating a Piledriver session.
+
+For model checking, a cfg is required. If `[cfg]` is omitted, `piledriver tlc`
+expects a sibling cfg with the same basename as the `.tla` file (for example,
+`Spec.cfg` next to `Spec.tla`) and fails early if it is missing. Provide an
+explicit cfg path when the cfg is intentionally named differently or belongs to
+a model-checking wrapper module.
+
+Use `piledriver tlc <tla> --sany` for syntax checking only; `--sany` does not
+require a cfg. The top-level TLA+ module name must match the `.tla` filename.
 
 ## Verification Techniques
 

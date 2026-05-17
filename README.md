@@ -36,7 +36,7 @@ piledriver init <session-name>              # Create session with scaffolding
 piledriver set-phase <session> <phase>      # Transition between phases
 piledriver technique <session> [type]       # View/set verification technique
 piledriver check <session-name> [--sany]    # Run TLC model checker
-piledriver tlc <tla> [cfg] [--sany]         # Run TLC on arbitrary .tla/.cfg (no session)
+piledriver tlc <tla> [cfg] [--sany]         # Run TLC/SANY on arbitrary .tla/.cfg (no session)
 piledriver bug <session-name> <bug-name>    # Create bug reproducer
 piledriver test <session-name> [bug-name]   # Run reproducer validation
 piledriver pr <session-name>                # Generate PR draft
@@ -46,6 +46,25 @@ piledriver critique <session> <context>     # Get feedback from critic agent (re
 ```
 
 Each command outputs guidance on next steps.
+
+#### Running standalone TLA+ models
+
+Use `piledriver check <session>` for the model in a Piledriver session. Use
+`piledriver tlc` when you want to run a TLA+ model directly from the codebase:
+
+```bash
+piledriver tlc path/to/Spec.tla
+piledriver tlc path/to/Spec.tla path/to/Model.cfg
+piledriver tlc path/to/Spec.tla --sany
+```
+
+For model checking, the cfg is required. If you omit the cfg argument,
+`piledriver tlc` expects a sibling file with the same basename as the spec
+(`Spec.cfg` for `Spec.tla`) and fails early if it is missing. Pass an explicit
+cfg path for model-checking wrapper modules or non-sibling cfg files.
+
+For `--sany` syntax checks, no cfg is required. As with TLC/SANY generally, the
+top-level TLA+ module name must match the `.tla` filename.
 
 ## What it does
 
@@ -168,4 +187,3 @@ go test -run TestSpecificCase ./...
 3. Checks out fix_commit, runs reproduce.sh (should exit 0)
 4. Restores original git state
 5. Writes results.json
-

@@ -2285,7 +2285,7 @@ Commands:
   test <session> [bug]        Run before/after test validation
   status [session]            Show current state
   check <session>             Run TLC model checker
-  tlc <tla> [cfg]             Run TLC on an arbitrary .tla file (no session)
+  tlc <tla> [cfg]             Run TLC/SANY on an arbitrary .tla file (no session)
   pr <session>                Generate PR draft from report
   critique <session> <context> Send context to critic agent for feedback
 
@@ -2335,10 +2335,10 @@ Examples:
     check_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
 
     # tlc command (session-independent)
-    tlc_parser = subparsers.add_parser("tlc", help="Run TLC on an arbitrary .tla file (no session required)")
+    tlc_parser = subparsers.add_parser("tlc", help="Run TLC/SANY on an arbitrary .tla file (no session required)")
     tlc_parser.add_argument("tla_file", help="Path to the .tla file")
     tlc_parser.add_argument("cfg_file", nargs="?",
-                            help="Path to the .cfg file (defaults to <tla_file>.cfg sibling if present)")
+                            help="Path to the .cfg file (defaults to required <tla_file>.cfg sibling for TLC; optional with --sany)")
     tlc_parser.add_argument("--sany", action="store_true", help="Syntax check only (no model checking)")
 
     # pr command
