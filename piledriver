@@ -738,7 +738,6 @@ GUIDANCE = {
             "Document this in report.md",
             "Generate PR draft: `piledriver pr {session}`",
         ],
-        "reminder": "A passing reproducer confirms the bug; a model result alone does not."
     },
     "test:failure": {
         "summary": "Reproducer validation FAILED.",
