@@ -653,7 +653,7 @@ GUIDANCE = {
             "Set technique: `piledriver technique {session} <type>`",
             "For TLA+: `piledriver check {session}` runs the model checker",
         ],
-        "reminder": "Finding a violation is SUCCESS - you've proven the bug exists! If boundary was wrong: `piledriver set-phase {session} SCOPING`"
+        "reminder": "A model violation is the result you're hunting, not a failure - confirm it with a reproducer. If the boundary was wrong: `piledriver set-phase {session} SCOPING`"
     },
     "set-phase:REPORT": {
         "summary": "Entered REPORT phase.",
@@ -703,13 +703,13 @@ GUIDANCE = {
         "reminder": "No violations != no bugs. Verify assumptions hold in real code."
     },
     "check:violation": {
-        "summary": "TLC found invariant violation(s) - potential bug proven!",
+        "summary": "TLC found invariant violation(s) - a candidate bug to investigate.",
         "next_steps": [
             "Study the counterexample trace carefully:",
             "  - Does it represent a real execution path?",
             "  - Is this the bug you were hunting, or a different one?",
             "If modeling error: fix model or rescope with `piledriver set-phase {session} SCOPING`",
-            "If real bug: this is SUCCESS! Create reproducer: `piledriver bug {session} <name>`",
+            "If it's a real bug: create a reproducer with `piledriver bug {session} <name>`",
         ],
         "reminder": "Keep the 'broken' model that demonstrates the bug. Update it later to verify the fix works."
     },
@@ -738,7 +738,7 @@ GUIDANCE = {
             "Document this in report.md",
             "Generate PR draft: `piledriver pr {session}`",
         ],
-        "reminder": "This is the ultimate validation that your findings are real."
+        "reminder": "A passing reproducer confirms the bug; a model result alone does not."
     },
     "test:failure": {
         "summary": "Reproducer validation FAILED.",
